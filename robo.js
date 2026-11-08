@@ -524,6 +524,7 @@ function quadro() {
   if (balao && t > balao.ate) balao = null
   if (balao) desenharBalao(t)
   if (camera.ligada) { g.fillStyle = '#ff4d4d'; g.beginPath(); g.arc(14, 14, 4, 0, Math.PI * 2); g.fill() } // câmera ligada
+  if (!gravando && (vad.ativo || vad.verificando)) { g.fillStyle = vad.verificando ? 'rgba(255,214,102,.9)' : 'rgba(125,249,255,.9)'; g.beginPath(); g.arc(120, 230, 3 + Math.sin(t / 120) * 1, 0, Math.PI * 2); g.fill() }
   if (gravando) { g.fillStyle = '#ff4d4d'; g.font = 'bold 11px system-ui'; g.fillText('● ouvindo', 26, 228) }
 
   requestAnimationFrame(quadro)
@@ -723,7 +724,7 @@ function humorDaVoz(r) {
 // O S3 guarda sempre o último meio segundo de som. Quando percebe voz, grava a frase inteira
 // (com o começo), transcreve e só responde se ouviu o nome dele. Depois de uma resposta, por
 // 15 s, dá para continuar a conversa sem repetir o nome.
-const vad = { ativo: false, ini: 0, ultimaFala: 0, chunks: [], pre: [], piso: 0.005, vozes: 0, verificando: false, hora: [], seguirAte: 0 }
+const vad = { nivel: 0, ativo: false, ini: 0, ultimaFala: 0, chunks: [], pre: [], piso: 0.005, vozes: 0, verificando: false, hora: [], seguirAte: 0 }
 function ligarEscuta(src) {
   const proc = actx.createScriptProcessor(4096, 1, 1), mudo = actx.createGain()
   mudo.gain.value = 0
@@ -733,11 +734,12 @@ function ligarEscuta(src) {
     const x = new Float32Array(e.inputBuffer.getChannelData(0)), t = now()
     let q = 0; for (let i = 0; i < x.length; i++) q += x[i] * x[i]
     const rms = Math.sqrt(q / x.length)
+    vad.nivel = Math.max(rms, vad.nivel * 0.85)
     const pode = cfg.maosLivres && cfg.key && !gravando && !vad.verificando && !jogo && t > falandoAte && t > conversaAte && !audio.musica
     if (!vad.ativo) {
       vad.piso = rms < vad.piso ? vad.piso * 0.9 + rms * 0.1 : vad.piso * 0.995 + rms * 0.005
       vad.pre.push(x); if (vad.pre.length > PRE) vad.pre.shift()
-      if (pode && rms > Math.max(0.012, vad.piso * 4)) {
+      if (pode && rms > Math.max(0.006, vad.piso * 3.5)) {
         Object.assign(vad, { ativo: true, ini: t, ultimaFala: t, chunks: vad.pre, pre: [], vozes: 0 })
         prosoReset()
         if (t < vad.seguirAte) foco = { expr: 'ouvindo', ate: t + 4000 }
@@ -745,7 +747,7 @@ function ligarEscuta(src) {
       return
     }
     vad.chunks.push(x)
-    if (rms > Math.max(0.01, vad.piso * 3)) vad.ultimaFala = t
+    if (rms > Math.max(0.005, vad.piso * 2.5)) vad.ultimaFala = t
     if (!pode) { vad.ativo = false; vad.chunks = []; return } // ele mesmo fez barulho, ou começou outra coisa
     if (t - vad.ultimaFala > 800 || t - vad.ini > 8000) fimDaFrase(t)
   }
@@ -762,10 +764,11 @@ function chamouPeloNome(texto) {
   const nome = cfg.nome.split(/\s+/).map(semAcento).filter(Boolean)
   if (!nome.length) return null
   const pal = texto.split(/\s+/).filter(Boolean), norm = pal.map(semAcento)
-  const alvo = nome.join(' '), tol = alvo.length >= 5 ? 1 : 0
+  const alvo = nome.join(' '), tol = alvo.length >= 4 ? 1 : 0
   for (let i = 0; i + nome.length <= pal.length; i++) {
     const trecho = norm.slice(i, i + nome.length).join(' ')
-    if (trecho === alvo || (tol && distancia(trecho, alvo) <= tol)) {
+    const parecido = trecho === alvo || (tol && distancia(trecho, alvo) <= tol) || (nome.length === 1 && trecho.length <= alvo.length + 5 && trecho.startsWith(alvo))
+    if (parecido) {
       const resto = [...pal.slice(0, i), ...pal.slice(i + nome.length)].join(' ').replace(/^[\s,.!?;:-]+|[\s,;:-]+$/g, '').trim()
       return { resto: semAcento(resto) ? resto : '' }
     }
@@ -777,7 +780,7 @@ async function fimDaFrase(t) {
   vad.ativo = false
   const chunks = vad.chunks, dur = vad.ultimaFala - vad.ini, resumo = prosoResumo(), seguindo = vad.ini < vad.seguirAte
   vad.chunks = []
-  if (dur < 400 || vad.vozes < 3) return // barulho, não voz
+  if (dur < 400 || vad.vozes < 3) { if (dur >= 300) pushLog(`Mãos livres: descartei um som (${(dur / 1000).toFixed(1)} s, ${vad.vozes} trechos com voz)`); return } // barulho, não voz
   vad.hora = vad.hora.filter((x) => t - x < 3600000)
   if (vad.hora.length >= 40) { pushLog('Mãos livres: limite de 40 frases por hora (plano gratuito)'); return }
   vad.hora.push(t)
@@ -946,7 +949,7 @@ function analisar() {
 
   // Tom (cantarolar, assobio, fala) ~14 vezes por segundo.
   if (++contPitch % 3) return
-  const tom = rms > 0.012 ? detectarTom(tbuf, sr) : null
+  const tom = rms > (vad.ativo ? 0.004 : 0.012) ? detectarTom(tbuf, sr) : null
   audio.pitch = tom ? tom.f : 0; audio.clareza = tom ? tom.c : 0
   if (vad.ativo) { prosoTom(tom); if (tom && tom.c > 0.8 && tom.f > 70 && tom.f < 500) vad.vozes++ }
   if (jogo) { // no jogo, o tom vai todo para a resposta; nada de outras reações
@@ -1527,6 +1530,7 @@ Melodia fav. : ${P.melodia ? P.melodia.length + ' notas' : '—'} · recorde no 
 Rosto        : ${pessoa.presente ? `sorriso ${rosto.sorriso.toFixed(2)} · franzido ${rosto.franzido.toFixed(2)} · ${humorDoRosto() || '…'}` : '—'}
 Luz          : ${luz.nivel < 0 ? '— (precisa da câmera)' : `${Math.round(luz.nivel)} (normal ${Math.round(luz.base)})${luz.escuro ? ' · escuro' : ''}`}
 Sua voz      : ${P.voz ? `aprendida em ${P.voz.n} fala(s)` : 'ainda não conhece'}${vozDono ? ` · última ${vozDono.tipo}` : ''}
+Microfone    : nível ${vad.nivel.toFixed(3)} · precisa passar de ${Math.max(0.006, vad.piso * 3.5).toFixed(3)} para ouvir uma frase
 Mãos livres  : ${!cfg.maosLivres ? 'desligado' : !cfg.key ? 'precisa da chave' : vad.verificando ? 'conferindo se era com ele…' : vad.ativo ? 'ouvindo uma frase' : 'esperando o nome'} · ${vad.hora.length}/40 na hora${jogo ? `
 Jogo         : ${jogo.fase} · ${jogo.seq.length} notas` : ''}`
   $('#diario').textContent = [P.opiniao ? `Sobre ${cfg.dono}: ${P.opiniao}` : '', ...memorias.filter((m) => m.tipo === 'reflexao').slice(0, 6).map((m) => `${new Date(m.t).toLocaleDateString('pt-BR')} · ${m.txt}`)].filter(Boolean).join('\n') || 'Ainda não refletiu. Precisa da chave do Groq e de algumas lembranças.'
