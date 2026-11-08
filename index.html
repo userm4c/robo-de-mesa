@@ -46,6 +46,7 @@
   <div id="bar">
     <button id="btnFalar">🎤 Falar</button>
     <button id="btnCam">📷 Câmera</button>
+    <button id="btnJogo">🎶 Jogo</button>
     <button id="btnDebug">🐞</button>
     <button id="btnCfg">⚙️</button>
   </div>
@@ -53,7 +54,7 @@
 
 <div id="start">
   <h2 style="margin:0">Robô de mesa · protótipo</h2>
-  <p>Ele usa o microfone para sentir ritmo, música, cantarolar e assobio. A câmera é opcional e liga só quando você tocar em 📷. Tudo é processado no próprio celular; só o que você falar no botão 🎤 vai para o Groq, como texto.</p>
+  <p>Ele usa o microfone para sentir ritmo, música, cantarolar e assobio. A câmera é opcional e liga só quando você tocar em 📷. Rosto, sorriso e luz são processados no próprio celular; nenhuma imagem sai dele. A fala vai para a transcrição do Groq: pelo 🎤 ou, com mãos livres, quando ele percebe voz.</p>
   <button id="btnStart">Acordar o robô</button>
 </div>
 
@@ -69,6 +70,9 @@
     <button data-sim="pessoa">Pessoa chegou</button>
     <button data-sim="saiu">Pessoa saiu</button>
     <button data-sim="musica">Música (teste)</button>
+    <button data-sim="sorriso">Sorrir (teste)</button>
+    <button data-sim="escuro">Apagar a luz</button>
+    <button data-sim="claro">Acender a luz</button>
   </div>
   <label>Testar gesto e expressão</label>
   <div class="row" style="margin-top:0">
@@ -98,6 +102,8 @@
   <label>Modelo de conversa</label><select id="cModel"></select>
   <label>Modelo de transcrição</label><input id="cStt">
   <label class="check"><input id="cLegenda" type="checkbox"> Legendas: mostrar o que ele entendeu e o que quis dizer</label>
+  <label class="check"><input id="cMaos" type="checkbox"> Mãos livres: chamar pelo nome, sem apertar o 🎤</label>
+  <p class="hint">Com mãos livres, toda frase falada perto dele vai para a transcrição do Groq (até 40 por hora) para ele saber se chamaram o nome. O que não for com ele é descartado.</p>
   <div class="row">
     <button id="cSave">Salvar</button>
     <button id="cClose">Fechar</button>

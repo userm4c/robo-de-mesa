@@ -7,7 +7,12 @@ Robô de mesa com ESP32-S3 (câmera, microfones, som) e ESP32-C3 (rosto, presen�
 Abra https://userm4c.github.io/robo-de-mesa/ no Chrome do Android e toque em "Acordar o robô".
 
 - **Microfone:** ritmo e BPM (o rosto balança na batida), estilo aproximado da música, cantarolar e assobio (os olhos seguem a melodia), susto com barulho alto.
-- **Câmera (opcional, 📷):** detector de rosto rodando no próprio celular; os olhos seguem você. Ponto vermelho no rosto = câmera ligada.
+- **Câmera (opcional, 📷):** rosto e expressões rodando no próprio celular (MediaPipe Face Landmarker); os olhos seguem você. Ponto vermelho no rosto = câmera ligada.
+- **Espelho:** sorri quando você sorri, se assusta junto com a sua cara de surpresa, às vezes pisca junto. Se você fica sério e calado do lado dele, ele vem ver se está tudo bem.
+- **Luz:** pela câmera, percebe quando apagam a luz (à noite dorme, de dia estranha) e acorda quando acende de manhã.
+- **Mãos livres:** é só chamar pelo nome e falar; por 15 s depois da resposta dá para continuar sem repetir o nome. Desliga em ⚙️.
+- **Tom de voz:** aprende a sua voz normal e percebe quando você está animado ou desanimado; isso muda a reação dele e vai para o Groq.
+- **Jogo da melodia (🎶):** ele toca notas, você repete assobiando ou cantarolando; a cada acerto, mais uma nota. Guarda o recorde. Também começa pedindo por voz.
 - **Emoções em 3 camadas:** personalidade (muda devagar), humor do dia (sorteado ao acordar), emoção (reação rápida). Entediado, só algo interessante tira ele do tédio.
 - **Sons fofos** gerados na hora, nunca iguais. Sem fala.
 - **Gestos:** sim, não, talvez, não sei, pulinhos, rir, piscadela, tímido, desconfiado, tonto, suspiro, dancinha, encolher, olhar em volta, desmaiar, surpresa.

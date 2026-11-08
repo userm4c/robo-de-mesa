@@ -33,7 +33,7 @@ const bus = {
 }
 
 // ---------------------------------------------------------------- configurações
-const cfg = Object.assign({ nome: 'Robô', dono: 'Will', key: '', model: 'llama-3.3-70b-versatile', stt: 'whisper-large-v3-turbo', legenda: false }, store.get('cfg', {}))
+const cfg = Object.assign({ nome: 'Robô', dono: 'Will', key: '', model: 'llama-3.3-70b-versatile', stt: 'whisper-large-v3-turbo', legenda: false, maosLivres: true }, store.get('cfg', {}))
 
 // ================================================================ CÉREBRO
 // Personalidade: muda devagar (semanas). Humor do dia: sorteado ao acordar.
@@ -169,7 +169,7 @@ function tickCerebro(dt) {
   // curioso enjoa mais rápido da mesmice.
   N.social = clamp(N.social - dt / (pessoa.presente ? 9000 : 2400) * (0.5 + P.extroversao), 0, 1)
   N.estimulo = clamp(N.estimulo - dt / 900 * (0.5 + P.curiosidade), 0, 1)
-  N.energia = clamp(N.energia + (dormindo ? dt / 14400 : -dt / 57600 * (ehNoite() ? 2 : 1)), 0, 1)
+  N.energia = clamp(N.energia + (dormindo ? dt / 14400 : -dt / 57600 * (ehNoite() ? 2 : 1) * (luz.escuro ? 1.5 : 1)), 0, 1)
   for (const t of Object.keys(hab)) { hab[t] *= Math.exp(-dt / 90); if (hab[t] < 0.05) delete hab[t] }
   // Fora da faixa = desconforto (valência negativa); dentro = contente. Como no Kismet.
   const d = desconforto()
@@ -182,7 +182,8 @@ function tickCerebro(dt) {
   const parado = (now() - ultimoEvento) / 1000
   if (!dormindo && parado > 120 && (N.energia < 0.15 || (ehNoite() && parado > 300)) ) dormir(ehNoite() ? 'é de noite' : 'sem energia')
   else if (!dormindo && parado > 1200 && !pessoa.presente) dormir('cochilo')
-  if (dormindo && !ehNoite() && parado > 60 && ((N.energia > 0.8 && horaDoDia() < 12) || N.energia > 0.95)) { acordar(); setTimeout(() => { iniciarGesto('espreguicar'); somGesto('espreguicar') }, 1300) }
+  else if (!dormindo && luz.escuro && now() - luz.desde > 60000 && parado > 60 && !jogo) dormir('está escuro')
+  if (dormindo && !ehNoite() && !luz.escuro && parado > 60 && ((N.energia > 0.8 && horaDoDia() < 12) || N.energia > 0.95)) { acordar(); setTimeout(() => { iniciarGesto('espreguicar'); somGesto('espreguicar') }, 1300) }
   if (foco && now() > foco.ate) foco = null
   if (icone && now() > icone.ate) icone = null
 }
@@ -245,15 +246,18 @@ function escolherComportamento() {
 function tickComportamento() {
   if (dormindo) return
   const t = now()
-  if (t > proxComport && !foco && !gesto && !gravando && !audio.musica) {
+  if (t > proxComport && !foco && !gesto && !gravando && !audio.musica && !jogo && !vad.ativo && !vad.verificando) {
     proxComport = t + rnd(4000, 9000)
     const k = escolherComportamento()
     if (k !== 'nada') { ultimaVez[k] = t; pushLog('Cérebro→ vontade: ' + k); COMPORTAMENTOS[k].fazer() }
   }
   // Você do lado, calado há um tempo: ele fica curioso e pergunta se está tudo bem.
-  if (pessoa.presente && t - audio.ultimoSom > 45000 && t - pessoa.desde > 45000 && t > proxCuriosidade) {
+  if (pessoa.presente && t - audio.ultimoSom > 45000 && t - pessoa.desde > 45000 && t > proxCuriosidade && !jogo) {
     proxCuriosidade = t + 240000
-    evento({ label: 'você está quieto do meu lado', P: 0.1, A: 0.35, interesse: 0.8, expr: 'curioso', icone: '?', som: 'curioso', gesto: 'nao_sei', dur: 3500 })
+    const cara = humorDoRosto()
+    // Sério ou de cara fechada há um tempo: ele vem ver se está tudo bem. Sorrindo: deixa quieto.
+    if (cara === 'sério' || cara === 'de cara fechada') evento({ label: `você está quieto e ${cara}`, P: -0.1, A: 0.2, interesse: 0.8, expr: 'triste', icones: ['pessoa', 'pergunta', 'abraco'], som: 'curioso', gesto: 'nao_sei', forcarGesto: true, dur: 4000 })
+    else if (cara !== 'sorrindo') evento({ label: 'você está quieto do meu lado', P: 0.1, A: 0.35, interesse: 0.8, expr: 'curioso', icone: '?', som: 'curioso', gesto: 'nao_sei', dur: 3500 })
   }
   // Clima (SHT40 simulado), a cada 2 min.
   if (t - ultimoClima > 120000) {
@@ -622,7 +626,7 @@ function somGesto(nome) {
 
 // Melodias: ele repete o que você assobiou/cantarolou (proto-diálogo, como o Kismet) e
 // guarda a favorita para cantarolar sozinho quando está contente.
-function tocarMelodia(notas, vel = 1) {
+function tocarMelodia(notas, vel = 1, op = {}) {
   if (!actx || !notas?.length) return
   const out = actx.createGain(); out.gain.value = 0.22; out.connect(actx.destination)
   const base = 880 * (0.9 + P.energia * 0.25) // a "voz" dele
@@ -630,9 +634,9 @@ function tocarMelodia(notas, vel = 1) {
   let t = t0
   for (let i = 0; i < notas.length; i++) {
     const n = notas[i], prox = notas[i + 1] || n, d = clamp(n.d / vel, 0.06, 0.6)
-    const f0 = base * 2 ** (n.st / 12), f1 = base * 2 ** ((n.st + (prox.st - n.st) * 0.3) / 12)
-    silaba(out, t, f0, f1, d, 'sine', d > 0.25 ? 5 : 0, 0.9)
-    t += d + 0.015
+    const f0 = base * 2 ** (n.st / 12), f1 = op.liso ? f0 : base * 2 ** ((n.st + (prox.st - n.st) * 0.3) / 12)
+    silaba(out, t, f0, f1, d, 'sine', !op.liso && d > 0.25 ? 5 : 0, 0.9)
+    t += d + (op.gap ?? 0.015)
   }
   falandoAte = now() + (t - t0) * 1000 + 300
 }
@@ -675,6 +679,218 @@ async function ligarOuvido(stream) {
   binMax = Math.floor(5000 / (sr / an.fftSize))
   setInterval(analisar, 23)
   setInterval(estimarRitmo, 500)
+  ligarEscuta(src)
+}
+
+// ---------------------------------------------------------------- tom de voz (prosódia)
+// Enquanto alguém fala com ele: altura média, variação, volume e sílabas por segundo.
+// Comparado com a voz normal do dono (aprendida aos poucos), vira "animada" ou "desanimada".
+const proso = { f: [], rms: [], sil: 0, ativos: 0, acima: false, ultimoPico: 0, t0: 0 }
+function prosoReset() { proso.f = []; proso.rms = []; proso.sil = 0; proso.ativos = 0; proso.acima = false; proso.t0 = now() }
+function prosoQuadro(t, rms) {
+  const lim = Math.max(0.015, vad.piso * 3)
+  if (rms > lim) { proso.ativos++; proso.rms.push(rms) }
+  if (!proso.acima && rms > lim * 1.6 && t - proso.ultimoPico > 120) { proso.acima = true; proso.sil++; proso.ultimoPico = t }
+  else if (proso.acima && rms < lim) proso.acima = false
+}
+function prosoTom(tom) { if (tom && tom.c > 0.8 && tom.f > 70 && tom.f < 500) proso.f.push(12 * Math.log2(tom.f / 440)) }
+function prosoResumo() {
+  if (proso.f.length < 5 || proso.ativos < 10) return null
+  const f = [...proso.f].sort((a, b) => a - b), med = f[f.length >> 1]
+  const dp = Math.sqrt(f.reduce((a, x) => a + (x - med) ** 2, 0) / f.length)
+  const r = [...proso.rms].sort((a, b) => b - a).slice(0, Math.max(1, proso.rms.length >> 1))
+  return { med, dp, rms: r.reduce((a, b) => a + b, 0) / r.length, taxa: proso.sil / Math.max(0.3, proso.ativos * 0.023) }
+}
+let vozDono = null // {tipo, s, t}
+function humorDaVoz(r) {
+  if (!r) return null
+  const b = P.voz
+  let tipo = 'neutra', sc = 0
+  if (b && b.n >= 3) {
+    sc = (r.med - b.med) / 2.5 + (r.dp - b.dp) / Math.max(0.8, b.dp) + 0.8 * (r.rms - b.rms) / Math.max(0.005, b.rms) + 0.8 * (r.taxa - b.taxa) / Math.max(0.5, b.taxa)
+    tipo = sc > 1.6 ? 'animada' : sc < -1.6 ? 'desanimada' : 'neutra'
+  }
+  const a = b ? Math.max(0.15, 1 / (b.n + 1)) : 1
+  P.voz = b ? { med: lerp(b.med, r.med, a), dp: lerp(b.dp, r.dp, a), rms: lerp(b.rms, r.rms, a), taxa: lerp(b.taxa, r.taxa, a), n: b.n + 1 } : { ...r, n: 1 }
+  vozDono = { tipo, s: sc, t: now() }
+  pushLog(`S3→ voz ${tipo}${b && b.n >= 3 ? ` (${sc.toFixed(1)})` : ` (aprendendo sua voz ${P.voz.n}/3)`}`)
+  if (tipo === 'desanimada') imp.P -= 0.12 // contágio: fica um pouco junto com você
+  if (tipo === 'animada') imp.A += 0.2
+  return vozDono
+}
+
+// ---------------------------------------------------------------- mãos livres
+// O S3 guarda sempre o último meio segundo de som. Quando percebe voz, grava a frase inteira
+// (com o começo), transcreve e só responde se ouviu o nome dele. Depois de uma resposta, por
+// 15 s, dá para continuar a conversa sem repetir o nome.
+const vad = { ativo: false, ini: 0, ultimaFala: 0, chunks: [], pre: [], piso: 0.005, vozes: 0, verificando: false, hora: [], seguirAte: 0 }
+function ligarEscuta(src) {
+  const proc = actx.createScriptProcessor(4096, 1, 1), mudo = actx.createGain()
+  mudo.gain.value = 0
+  src.connect(proc); proc.connect(mudo).connect(actx.destination)
+  const PRE = Math.ceil(0.6 * actx.sampleRate / 4096)
+  proc.onaudioprocess = (e) => {
+    const x = new Float32Array(e.inputBuffer.getChannelData(0)), t = now()
+    let q = 0; for (let i = 0; i < x.length; i++) q += x[i] * x[i]
+    const rms = Math.sqrt(q / x.length)
+    const pode = cfg.maosLivres && cfg.key && !gravando && !vad.verificando && !jogo && t > falandoAte && t > conversaAte && !audio.musica
+    if (!vad.ativo) {
+      vad.piso = rms < vad.piso ? vad.piso * 0.9 + rms * 0.1 : vad.piso * 0.995 + rms * 0.005
+      vad.pre.push(x); if (vad.pre.length > PRE) vad.pre.shift()
+      if (pode && rms > Math.max(0.012, vad.piso * 4)) {
+        Object.assign(vad, { ativo: true, ini: t, ultimaFala: t, chunks: vad.pre, pre: [], vozes: 0 })
+        prosoReset()
+        if (t < vad.seguirAte) foco = { expr: 'ouvindo', ate: t + 4000 }
+      }
+      return
+    }
+    vad.chunks.push(x)
+    if (rms > Math.max(0.01, vad.piso * 3)) vad.ultimaFala = t
+    if (!pode) { vad.ativo = false; vad.chunks = []; return } // ele mesmo fez barulho, ou começou outra coisa
+    if (t - vad.ultimaFala > 800 || t - vad.ini > 8000) fimDaFrase(t)
+  }
+}
+const semAcento = (x) => x.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '')
+function distancia(a, b) {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i])
+  for (let j = 1; j <= b.length; j++) d[0][j] = j
+  for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1))
+  return d[a.length][b.length]
+}
+// Procura o nome dele na frase (sem ligar para acento; nomes longos aceitam 1 letra trocada).
+function chamouPeloNome(texto) {
+  const nome = cfg.nome.split(/\s+/).map(semAcento).filter(Boolean)
+  if (!nome.length) return null
+  const pal = texto.split(/\s+/).filter(Boolean), norm = pal.map(semAcento)
+  const alvo = nome.join(' '), tol = alvo.length >= 5 ? 1 : 0
+  for (let i = 0; i + nome.length <= pal.length; i++) {
+    const trecho = norm.slice(i, i + nome.length).join(' ')
+    if (trecho === alvo || (tol && distancia(trecho, alvo) <= tol)) {
+      const resto = [...pal.slice(0, i), ...pal.slice(i + nome.length)].join(' ').replace(/^[\s,.!?;:-]+|[\s,;:-]+$/g, '').trim()
+      return { resto: semAcento(resto) ? resto : '' }
+    }
+  }
+  return null
+}
+const ALUCINACAO = /obrigad[oa] por assistir|legendas? (pela|por|da)|amara\.org|inscreva-se|se inscreva|tchau,? tchau/i
+async function fimDaFrase(t) {
+  vad.ativo = false
+  const chunks = vad.chunks, dur = vad.ultimaFala - vad.ini, resumo = prosoResumo(), seguindo = vad.ini < vad.seguirAte
+  vad.chunks = []
+  if (dur < 400 || vad.vozes < 3) return // barulho, não voz
+  vad.hora = vad.hora.filter((x) => t - x < 3600000)
+  if (vad.hora.length >= 40) { pushLog('Mãos livres: limite de 40 frases por hora (plano gratuito)'); return }
+  vad.hora.push(t)
+  vad.verificando = true
+  try {
+    const texto = await transcrever(paraWav(chunks, actx.sampleRate))
+    if (!texto || ALUCINACAO.test(texto)) return
+    const chamado = chamouPeloNome(texto)
+    if (!chamado && !seguindo) { pushLog(`(ouviu, não era com ele) ${texto.slice(0, 60)}`); return }
+    const vh = humorDaVoz(resumo)
+    if (chamado && !chamado.resto) { // só chamou: ele olha e espera
+      vad.seguirAte = now() + 10000
+      evento({ label: 'me chamou', P: 0.2, A: 0.4, interesse: 0.85, expr: 'curioso', gesto: 'surpresa', forcarGesto: true, icones: ['olhos', 'pergunta'], social: 0.04, dur: 3000 })
+      return
+    }
+    await responder(chamado ? chamado.resto : texto, vh)
+  } catch (e) { pushLog('Mãos livres: ' + e.message) } finally { vad.verificando = false }
+}
+// WAV de 16 kHz (o que o Whisper usa por dentro), com o volume normalizado.
+function paraWav(chunks, srIn) {
+  const n = chunks.reduce((a, c) => a + c.length, 0), flat = new Float32Array(n)
+  let o = 0; for (const c of chunks) { flat.set(c, o); o += c.length }
+  let pico = 0; for (let i = 0; i < n; i++) pico = Math.max(pico, Math.abs(flat[i]))
+  const ganho = pico > 0 ? Math.min(8, 0.9 / pico) : 1, passo = srIn / 16000, m = Math.floor(n / passo)
+  const v = new DataView(new ArrayBuffer(44 + m * 2))
+  const w = (k, x) => { for (let i = 0; i < x.length; i++) v.setUint8(k + i, x.charCodeAt(i)) }
+  w(0, 'RIFF'); v.setUint32(4, 36 + m * 2, true); w(8, 'WAVE'); w(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true)
+  v.setUint32(24, 16000, true); v.setUint32(28, 32000, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, 'data'); v.setUint32(40, m * 2, true)
+  for (let i = 0; i < m; i++) {
+    const a = Math.floor(i * passo), b = Math.max(a + 1, Math.floor((i + 1) * passo))
+    let q = 0; for (let k = a; k < b; k++) q += flat[k]
+    v.setInt16(44 + i * 2, clamp((q / (b - a)) * ganho, -1, 1) * 32767, true)
+  }
+  return new Blob([v.buffer], { type: 'audio/wav' })
+}
+
+// ---------------------------------------------------------------- jogo da melodia
+// Ele toca algumas notas; você repete assobiando ou cantarolando. A cada acerto, mais uma nota.
+// Vale o desenho da melodia (sobe, desce, quanto), não o tom exato: cada um canta na sua altura.
+let jogo = null
+const ESCALA = [0, 2, 4, 7, 9, 12]
+function novaNota(ant) { let n; do { n = ESCALA[Math.floor(Math.random() * ESCALA.length)] } while (ant !== undefined && Math.abs(n - ant) < 2); return n }
+function iniciarJogo() {
+  if (jogo || !actx || gravando) return
+  if (dormindo) acordar()
+  const seq = [novaNota()]; seq.push(novaNota(seq[0])); seq.push(novaNota(seq[1]))
+  jogo = { seq, rodada: 1, fase: 'esperando', frames: [], falhas: 0, inicio: 0, ultimo: 0 }
+  $('#btnJogo').classList.add('on')
+  evento({ label: 'jogo da melodia!', P: 0.3, A: 0.5, interesse: 0.9, expr: 'empolgado', gesto: 'pulinhos', forcarGesto: true, icones: ['musica', 'jogo'], social: 0.05, dur: 2000 })
+  setTimeout(tocarRodada, 2000)
+}
+function tocarRodada() {
+  if (!jogo) return
+  jogo.fase = 'tocando'
+  foco = { expr: 'contente', ate: now() + 60000 }; icone = { tipo: 'nota', ate: now() + 60000 }
+  tocarMelodia(jogo.seq.map((st) => ({ st, d: 0.42 })), 1, { gap: 0.16, liso: true })
+  setTimeout(() => {
+    if (!jogo) return
+    Object.assign(jogo, { fase: 'ouvindo', frames: [], inicio: now(), ultimo: 0 })
+    foco = { expr: 'ouvindo', ate: now() + 60000 }
+  }, falandoAte - now() + 150)
+}
+function notasDoJogo(fr) {
+  const grupos = []
+  let g0 = null
+  for (const p of fr) {
+    if (g0 && p.t - g0.fim < 170 && Math.abs(p.st - g0.med) < 1.5) { g0.pts.push(p.st); g0.fim = p.t; g0.med = [...g0.pts].sort((a, b) => a - b)[g0.pts.length >> 1] }
+    else { if (g0) grupos.push(g0); g0 = { pts: [p.st], fim: p.t, med: p.st } }
+  }
+  if (g0) grupos.push(g0)
+  const notas = []
+  for (const x of grupos.filter((x) => x.pts.length >= 2)) { if (notas.length && Math.abs(notas[notas.length - 1] - x.med) < 1.2) continue; notas.push(x.med) }
+  return notas
+}
+function confere(alvo, canto) {
+  if (canto.length !== alvo.length) return false
+  for (let i = 1; i < alvo.length; i++) { const a = alvo[i] - alvo[i - 1], c = canto[i] - canto[i - 1]; if (Math.sign(a) !== Math.sign(c) || Math.abs(a - c) > 3) return false }
+  return true
+}
+function tickJogo() {
+  if (!jogo || jogo.fase !== 'ouvindo') return
+  const t = now()
+  if (jogo.frames.length && t - jogo.ultimo > 1000) return avaliarJogo()
+  if (!jogo.frames.length && t - jogo.inicio > 9000) {
+    if (++jogo.falhas >= 2) return fimDoJogo('desistiu')
+    jogo.fase = 'esperando'; foco = null
+    evento({ label: 'sua vez!', P: 0, A: 0.3, interesse: 0.7, expr: 'curioso', gesto: 'nao_sei', forcarGesto: true, icones: ['musica', 'pergunta'], dur: 2000 })
+    setTimeout(tocarRodada, 2200)
+  } else if (t - jogo.inicio > 20000) avaliarJogo()
+}
+setInterval(tickJogo, 100)
+function avaliarJogo() {
+  const canto = notasDoJogo(jogo.frames)
+  jogo.fase = 'esperando'; foco = null; icone = null
+  pushLog(`Jogo→ esperava ${jogo.seq.length} notas, ouvi ${canto.length}`)
+  if (!confere(jogo.seq, canto)) return fimDoJogo('errou')
+  jogo.rodada++; jogo.falhas = 0
+  if (jogo.seq.length >= 12) return fimDoJogo('zerou')
+  jogo.seq.push(novaNota(jogo.seq[jogo.seq.length - 1]))
+  evento({ label: `acertou! agora são ${jogo.seq.length} notas`, P: 0.4, A: 0.5, interesse: 0.9, expr: 'empolgado', gesto: 'pulinhos', forcarGesto: true, icones: ['certo'], numero: String(jogo.rodada - 1), dur: 1800 })
+  setTimeout(tocarRodada, 2400)
+}
+function fimDoJogo(motivo) {
+  if (!jogo) return
+  const pontos = jogo.rodada - 1, recorde = pontos > (P.recordeMelodia || 0)
+  jogo = null; foco = null; icone = null; $('#btnJogo').classList.remove('on')
+  N.estimulo = clamp(N.estimulo + 0.1, 0, 1)
+  if (recorde) { P.recordeMelodia = pontos; lembrar(`${cfg.dono} bateu o recorde no jogo da melodia: ${pontos} rodada(s)`, 5) }
+  if (motivo === 'parou') return evento({ label: 'jogo parado', P: 0, interesse: 0.3, expr: 'contente', som: false, dur: 1000 })
+  if (motivo === 'desistiu') return evento({ label: 'ninguém cantou, jogo acabou', P: -0.1, A: -0.2, interesse: 0.5, expr: 'entediado', gesto: 'suspiro', forcarGesto: true, icones: ['musica', 'dormir'], dur: 2500 })
+  evento({ label: `fim do jogo: ${pontos} rodada(s)${recorde ? ' · recorde!' : ''}`, P: recorde ? 0.45 : 0.05, A: 0.3, interesse: 0.8, social: 0.06,
+    expr: motivo === 'zerou' || recorde ? 'orgulhoso' : 'rindo', gesto: motivo === 'zerou' ? 'dancinha' : recorde ? 'pulinhos' : 'rir', forcarGesto: true,
+    icones: motivo === 'zerou' || recorde ? ['trofeu', 'musica'] : ['errado', 'musica'], numero: String(pontos), dur: 4500 })
 }
 
 function analisar() {
@@ -684,6 +900,8 @@ function analisar() {
   const rms = Math.sqrt(s / tbuf.length)
   audio.rms = rms
   if (t < falandoAte) return // ouvindo a própria voz
+  if (gravando || vad.ativo) prosoQuadro(t, rms) // tom de voz de quem está falando com ele
+  if (gravando && ++contPitch % 3 === 0 && rms > 0.012) prosoTom(detectarTom(tbuf, sr))
   if (gravando || t < conversaAte) { cantoRun = []; melodiaRun = []; cantoEmitido = false; tipoCanto = null; return } // conversa com o Groq
   audio.rmsMedio = audio.rmsMedio * 0.98 + rms * 0.02
   if (rms > 0.02) audio.ultimoSom = t
@@ -730,6 +948,11 @@ function analisar() {
   if (++contPitch % 3) return
   const tom = rms > 0.012 ? detectarTom(tbuf, sr) : null
   audio.pitch = tom ? tom.f : 0; audio.clareza = tom ? tom.c : 0
+  if (vad.ativo) { prosoTom(tom); if (tom && tom.c > 0.8 && tom.f > 70 && tom.f < 500) vad.vozes++ }
+  if (jogo) { // no jogo, o tom vai todo para a resposta; nada de outras reações
+    if (jogo.fase === 'ouvindo' && tom && tom.c > 0.8) { jogo.frames.push({ t, st: 12 * Math.log2(tom.f / 440) }); jogo.ultimo = t }
+    return
+  }
   if (tom && tom.c > 0.88 && !audio.musica) {
     ultimoTom = t
     cantoRun.push({ t, f: tom.f }); while (cantoRun.length && t - cantoRun[0].t > 3000) cantoRun.shift()
@@ -856,15 +1079,16 @@ bus.on('melodia', ({ notas, tipo }) => {
 })
 let proxVez = 0
 bus.on('sua_vez', () => { // proto-diálogo: você fala, ele responde com bipes na vez dele
-  if (dormindo || gravando || now() < proxVez || now() < falandoAte) return
+  if (dormindo || gravando || jogo || now() < proxVez || now() < falandoAte) return
   if (Math.random() > 0.35 + P.extroversao * 0.5) return
   proxVez = now() + 8000
   setTimeout(() => {
+    if (vad.ativo || vad.verificando || gravando || now() < conversaAte) return // talvez estejam falando com ele de verdade
     const nome = emo.nome === 'neutro' ? 'curioso' : emo.nome
     iniciarGesto(['sim', 'talvez', 'nao_sei'][Math.floor(Math.random() * 3)])
     somDe(nome, 0.35)
     N.social = clamp(N.social + 0.03, 0, 1)
-  }, 350)
+  }, cfg.maosLivres && cfg.key ? 1200 : 350)
 })
 bus.on('voz', () => evento({ label: 'ouvi alguém falar', tipo: 'voz', P: 0.05, A: 0.25, interesse: 0.5 * P.curiosidade + 0.2, expr: 'curioso', som: false, dur: 1500 }))
 
@@ -880,38 +1104,112 @@ async function ligarCamera() {
   if (!camera.detector) {
     pushLog('S3→ carregando detector de rosto…')
     const V = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14'
-    const { FilesetResolver, FaceDetector } = await import(V)
+    // Pontos do rosto + "blendshapes" (sorriso, boca aberta, sobrancelhas, piscada), tudo no celular.
+    const { FilesetResolver, FaceLandmarker } = await import(V)
     const vision = await FilesetResolver.forVisionTasks(V + '/wasm')
-    camera.detector = await FaceDetector.createFromOptions(vision, {
-      baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite', delegate: 'GPU' },
-      runningMode: 'VIDEO', minDetectionConfidence: 0.6,
+    const opcoes = (delegate) => ({
+      baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task', delegate },
+      runningMode: 'VIDEO', numFaces: 1, outputFaceBlendshapes: true, minFaceDetectionConfidence: 0.5, minFacePresenceConfidence: 0.5,
     })
-    pushLog('S3→ detector pronto (roda no celular)')
+    try { camera.detector = await FaceLandmarker.createFromOptions(vision, opcoes('GPU')) } catch { camera.detector = await FaceLandmarker.createFromOptions(vision, opcoes('CPU')) }
+    pushLog('S3→ detector de rosto e expressões pronto (roda no celular)')
   }
   camera.timer = setInterval(() => {
     if (!camera.ligada || video.readyState < 2) return
     const r = camera.detector.detectForVideo(video, now())
-    const d = r.detections?.[0]
-    if (d) {
-      const b = d.boundingBox
-      const x = -((b.originX + b.width / 2) / video.videoWidth * 2 - 1) // espelhado
-      const y = (b.originY + b.height / 2) / video.videoHeight * 2 - 1
-      bus.emit('face', { x, y, tam: b.width / video.videoWidth })
+    const lm = r.faceLandmarks?.[0]
+    if (lm) {
+      let x0 = 1, x1 = 0, y0 = 1, y1 = 0
+      for (const q of lm) { if (q.x < x0) x0 = q.x; if (q.x > x1) x1 = q.x; if (q.y < y0) y0 = q.y; if (q.y > y1) y1 = q.y }
+      const bs = Object.fromEntries((r.faceBlendshapes?.[0]?.categories || []).map((c) => [c.categoryName, c.score]))
+      const m2 = (a, b) => ((bs[a] || 0) + (bs[b] || 0)) / 2
+      bus.emit('face', {
+        x: -(x0 + x1 - 1), y: y0 + y1 - 1, tam: x1 - x0, // x espelhado
+        exp: { sorriso: m2('mouthSmileLeft', 'mouthSmileRight'), boca: bs.jawOpen || 0, sobrancelha: bs.browInnerUp || 0, franzido: m2('browDownLeft', 'browDownRight'), piscou: Math.min(bs.eyeBlinkLeft || 0, bs.eyeBlinkRight || 0) },
+      })
     }
+    medirLuz(video)
     vigiarPresenca()
-  }, 125)
+  }, 140)
 }
 function desligarCamera() {
   camera.ligada = false; clearInterval(camera.timer)
+  if (luz.escuro) bus.emit('luz_acendeu', { label: 'câmera desligada' })
+  Object.assign(luz, { nivel: -1, base: -1, escuro: false })
   camera.stream?.getTracks().forEach((t) => t.stop()); camera.stream = null
   if (pessoa.presente) { pessoa.presente = false; bus.emit('pessoa_saiu', { label: 'câmera desligada' }) }
 }
 bus.on('face', (f) => {
   const t = now()
   pessoa.x = f.x; pessoa.y = f.y; pessoa.tam = f.tam; pessoa.visto = t
+  if (f.exp) lerRosto(f.exp, t)
   if (!pessoa.presente) { pessoa.presente = true; pessoa.desde = t; bus.emit('pessoa_chegou', { label: `rosto ${(f.tam * 100).toFixed(0)}%` }) }
 })
 function vigiarPresenca() { if (pessoa.presente && now() - pessoa.visto > 8000) { pessoa.presente = false; pessoa.saiuEm = now(); bus.emit('pessoa_saiu', { label: '' }) } }
+
+// ---------------------------------------------------------------- expressões de quem está na frente
+// Sorriso puxa sorriso (espelhamento), cara de surpresa assusta junto, e às vezes ele pisca
+// quando você pisca. O último minuto vira "sorrindo", "sério" ou "de cara fechada" para o Groq.
+const rosto = { sorriso: 0, franzido: 0, sorrindo: false, sorrisoDesde: 0, ultimoSorriso: -1e9, ultimaReacao: -1e9, ultimaSurpresa: -1e9, piscando: false, hist: [] }
+function lerRosto(e, t) {
+  rosto.sorriso = lerp(rosto.sorriso, e.sorriso, 0.35)
+  rosto.franzido = lerp(rosto.franzido, e.franzido, 0.25)
+  if (rosto.sorriso > 0.5) {
+    if (!rosto.sorrindo) { rosto.sorrindo = true; rosto.sorrisoDesde = t }
+    rosto.ultimoSorriso = t
+    if (t - rosto.sorrisoDesde > 700 && t - rosto.ultimaReacao > 12000 && !gravando && !jogo) { rosto.ultimaReacao = t; bus.emit('sorriu', { label: `sorriso ${rosto.sorriso.toFixed(2)}` }) }
+    imp.P = Math.min(imp.P + 0.008, 0.8) // enquanto você sorri, ele vai ficando contente
+  } else if (rosto.sorriso < 0.3) rosto.sorrindo = false
+  if (e.boca > 0.45 && e.sobrancelha > 0.45 && t - rosto.ultimaSurpresa > 15000 && !jogo) { rosto.ultimaSurpresa = t; bus.emit('cara_surpresa', { label: '' }) }
+  if (e.piscou > 0.55 && !rosto.piscando) { rosto.piscando = true; if (Math.random() < 0.2 + P.afeto * 0.3) setTimeout(() => (piscar = 1), rnd(120, 380)) }
+  else if (e.piscou < 0.3) rosto.piscando = false
+  rosto.hist.push([t, e.sorriso, e.franzido]); while (rosto.hist.length && rosto.hist[0][0] < t - 60000) rosto.hist.shift()
+}
+function humorDoRosto() {
+  if (!pessoa.presente || rosto.hist.length < 10) return null
+  const n = rosto.hist.length, s = rosto.hist.reduce((a, h) => a + h[1], 0) / n, fr = rosto.hist.reduce((a, h) => a + h[2], 0) / n
+  return s > 0.35 ? 'sorrindo' : fr > 0.35 ? 'de cara fechada' : now() - rosto.ultimoSorriso > 60000 ? 'sério' : 'tranquilo'
+}
+bus.on('sorriu', () => evento({ label: 'você sorriu pra mim', P: 0.45, A: 0.25, interesse: 0.75, tipo: 'sorriso', social: 0.05, confianca: 0.005,
+  expr: P.afeto > 0.6 && Math.random() < 0.4 ? 'apaixonado' : Math.random() < 0.5 ? 'rindo' : 'feliz', som: 'feliz', gesto: Math.random() < 0.3 ? 'piscadela' : null, dur: 2500 }))
+bus.on('cara_surpresa', () => evento({ label: 'você fez cara de surpresa', P: 0.1, A: 0.6, interesse: 0.7, tipo: 'surpresa', expr: 'surpreso', gesto: 'surpresa', dur: 1500 }))
+
+// ---------------------------------------------------------------- luz do ambiente (pela câmera)
+// Brilho médio da imagem a cada segundo. Queda forte = apagaram a luz. A câmera do celular
+// corrige a exposição sozinha, então compara com a luz "normal" de antes de escurecer.
+const luz = { nivel: -1, base: -1, escuro: false, desde: 0, ultima: 0, simAte: 0, cv: null, cx: null }
+function medirLuz(video) {
+  const t = now(); if (t - luz.ultima < 1000 || t < luz.simAte) return
+  luz.ultima = t
+  if (!luz.cv) { luz.cv = document.createElement('canvas'); luz.cv.width = 16; luz.cv.height = 12; luz.cx = luz.cv.getContext('2d', { willReadFrequently: true }) }
+  luz.cx.drawImage(video, 0, 0, 16, 12)
+  const d = luz.cx.getImageData(0, 0, 16, 12).data
+  let q = 0; for (let i = 0; i < d.length; i += 4) q += 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]
+  atualizarLuz(q / 192)
+}
+function atualizarLuz(v) {
+  const t = now()
+  luz.nivel = luz.nivel < 0 ? v : lerp(luz.nivel, v, 0.5)
+  if (luz.base < 0) luz.base = luz.nivel
+  if (!luz.escuro) luz.base = lerp(luz.base, luz.nivel, 0.02)
+  const escuroAgora = luz.nivel < 30 || (luz.base > 50 && luz.nivel < luz.base * 0.35)
+  const claroAgora = luz.nivel > 45 && !(luz.base > 50 && luz.nivel < luz.base * 0.5)
+  if (!luz.escuro && escuroAgora) { luz.escuro = true; luz.desde = t; bus.emit('luz_apagou', { label: `brilho ${Math.round(luz.nivel)}` }) }
+  else if (luz.escuro && claroAgora) { luz.escuro = false; luz.desde = t; luz.base = luz.nivel; bus.emit('luz_acendeu', { label: `brilho ${Math.round(luz.nivel)}` }) }
+}
+bus.on('luz_apagou', () => {
+  if (dormindo || jogo) return
+  if (ehNoite() || horaDoDia() >= 21) {
+    evento({ label: 'apagaram a luz', P: 0, A: -0.4, interesse: 0.5, expr: 'sono', icones: ['lua', 'dormir'], som: 'sono', dur: 3000 })
+    setTimeout(() => { if (luz.escuro && !gravando && !jogo && !vad.verificando) dormir('apagaram a luz') }, 4000)
+  } else evento({ label: 'ué, escureceu', P: -0.15, A: 0.3, interesse: 0.6, expr: 'medo', gesto: 'olhar_em_volta', icones: ['lua', 'pergunta'], som: 'curioso', dur: 2500 })
+})
+bus.on('luz_acendeu', () => {
+  if (!dormindo) return evento({ label: 'acenderam a luz', P: 0.1, A: 0.2, interesse: 0.4, expr: 'surpreso', som: false, dur: 1000 })
+  if (ehNoite()) return evento({ label: 'acenderam a luz de madrugada', P: -0.1, interesse: 0.5, som: false }) // abre um olho e volta a dormir
+  acordar(); N.energia = Math.max(N.energia, 0.6)
+  setTimeout(() => { iniciarGesto('espreguicar'); somGesto('espreguicar') }, 1300)
+})
 
 bus.on('pessoa_chegou', () => {
   const sumido = (now() - pessoa.saiuEm) / 1000
@@ -949,7 +1247,9 @@ async function groq(path, opts) {
 async function alternarFala() {
   if (!cfg.key) { abrirCfg(); $('#cMsg').textContent = 'Coloque a chave do Groq para conversar.'; return }
   if (gravando) { rec?.stop(); return }
+  if (jogo) fimDoJogo('parou')
   const partes = []
+  prosoReset()
   try { streamFala = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }) } catch { streamFala = null }
   rec = new MediaRecorder(streamFala || micStream)
   rec.ondataavailable = (e) => e.data.size && partes.push(e.data)
@@ -957,24 +1257,50 @@ async function alternarFala() {
     gravando = false; $('#btnFalar').classList.remove('on')
     streamFala?.getTracks().forEach((t) => t.stop()); streamFala = null
     conversaAte = now() + 20000
-    processarFala(new Blob(partes, { type: rec.mimeType }))
+    const vh = humorDaVoz(prosoResumo()); prosoReset()
+    processarFala(new Blob(partes, { type: rec.mimeType }), vh)
   }
   rec.start(); gravando = true; $('#btnFalar').classList.add('on')
   foco = { expr: 'ouvindo', ate: now() + 9000 }; icone = { tipo: 'reticencias', ate: now() + 9000 }
   setTimeout(() => { if (gravando) rec.stop() }, 8000)
 }
 
-async function processarFala(blob) {
+async function transcrever(blob) {
+  const fd = new FormData()
+  fd.append('file', blob, 'fala.' + (blob.type.includes('wav') ? 'wav' : blob.type.includes('mp4') ? 'm4a' : 'webm'))
+  fd.append('model', cfg.stt); fd.append('language', 'pt'); fd.append('response_format', 'json')
+  fd.append('prompt', `Conversa em português do Brasil com ${cfg.nome}, um robozinho de mesa.`)
+  const { text } = await groq('/audio/transcriptions', { method: 'POST', body: fd })
+  return (text || '').trim()
+}
+async function processarFala(blob, vh) {
   foco = { expr: 'pensando', ate: now() + 15000 }; icone = { tipo: 'reticencias', ate: now() + 15000 }
+  let text
+  try { text = await transcrever(blob); if (!text) throw new Error('não entendi nada') } catch (err) { return erroConversa(err) }
+  await responder(text, vh)
+}
+function erroConversa(err) {
+  pushLog('Erro: ' + err.message)
+  legenda('Erro: ' + err.message)
+  conversaAte = now() + 1500
+  foco = { expr: 'triste', ate: now() + 2500 }; icone = { tipo: 'interrogacao', ate: now() + 2500 }
+  somDe('triste', 0.4)
+}
+// O que ele percebe de você agora (voz, rosto, luz), para o Groq responder de acordo.
+function percepcao(vh) {
+  const d = cfg.dono, cara = humorDoRosto(), out = []
+  if (vh && vh.tipo === 'animada') out.push(`Pelo tom de voz, ${d} está animado(a): fala mais alto e mais rápido que o normal.`)
+  if (vh && vh.tipo === 'desanimada') out.push(`Pelo tom de voz, ${d} parece desanimado(a) ou cansado(a): fala mais baixo e devagar que o normal.`)
+  if (cara) out.push(`Pela câmera, ${d} está ${cara}.`)
+  if (luz.escuro) out.push('O quarto está escuro.')
+  return out.join(' ')
+}
+async function responder(text, vh) {
+  pushLog(`Você: ${text}`)
+  legenda(`Você: ${text}`)
+  foco = { expr: 'pensando', ate: now() + 15000 }; icone = { tipo: 'reticencias', ate: now() + 15000 }
+  conversaAte = now() + 20000
   try {
-    const fd = new FormData()
-    fd.append('file', blob, 'fala.' + (blob.type.includes('mp4') ? 'm4a' : 'webm'))
-    fd.append('model', cfg.stt); fd.append('language', 'pt'); fd.append('response_format', 'json')
-    fd.append('prompt', `Conversa em português do Brasil com ${cfg.nome}, um robozinho de mesa.`)
-    const { text } = await groq('/audio/transcriptions', { method: 'POST', body: fd })
-    pushLog(`Você: ${text}`)
-    legenda(`Você: ${text}`)
-    if (!text?.trim()) throw new Error('não entendi nada')
     const traços = `extroversão ${P.extroversao.toFixed(2)}, curiosidade ${P.curiosidade.toFixed(2)}, energia ${P.energia.toFixed(2)}, sensibilidade ${P.sensibilidade.toFixed(2)}, afeto por ${cfg.dono} ${P.afeto.toFixed(2)}`
     const gostos = Object.entries(P.gostos).map(([k, v]) => `${k} ${v.toFixed(2)}`).join(', ')
     const recentes = lembrancas(10).map((m) => `- ${m.tipo === 'reflexao' ? '(reflexão) ' : ''}${m.txt}`).join('\n') || '- nada marcante ainda'
@@ -989,8 +1315,11 @@ Como responder:
 - Hora, data, temperatura e umidade: NUNCA escreva o valor você mesmo. Use exatamente "numero": "{hora}", "{data}", "{temp}" ou "{umid}", que o robô preenche com o valor certo. Para outras contagens, use "numero" com até 6 caracteres (ex.: "3", "10+").
 - Piadas: "rir". Elogio: "timido" ou "orgulhoso". Notícia triste: "chorando" ou "suspiro". Coisa estranha: "desconfiado". Coisa confusa: "tonto". Algo incrível: "pulinhos" ou "empolgado".
 - Seja coerente com o humor de hoje: de mau humor reage menos; entediado, só algo interessante anima. Não seja sempre feliz. Varie os gestos.
+- Se ${cfg.dono} parecer desanimado(a), seja carinhoso; se estiver animado(a), entre na onda.
+- Se ${cfg.dono} quiser jogar o jogo da melodia (ou um jogo de música, de assobiar, de repetir notas), use "acao": "jogo_melodia".
 
 Agora: ${quando}. Temperatura ${clima.temp} °C, umidade ${clima.umid} %. ${audio.musica ? `Está tocando música ${audio.estilo} (${audio.bpm} BPM).` : ''}
+${percepcao(vh)}
 Sua personalidade (0 a 1): ${traços}, confiança em ${cfg.dono} ${P.confianca.toFixed(2)}. Você tem ${P.dias} dia(s) de vida.
 ${P.opiniao ? `O que você acha de ${cfg.dono}: ${P.opiniao}` : ''}
 Suas necessidades agora (0 a 1): companhia ${N.social.toFixed(2)}, novidade ${N.estimulo.toFixed(2)}, energia ${N.energia.toFixed(2)}. ${N.social < 0.35 ? 'Você está carente.' : ''} ${N.estimulo < 0.3 ? 'Você está entediado.' : ''} ${N.energia < 0.3 ? 'Você está cansado.' : ''}
@@ -1004,7 +1333,7 @@ GESTOS: ${Object.keys(GESTOS).join(', ')}, nenhum
 EMOÇÕES: ${EMOCOES.join(', ')}
 ÍCONES: ${Object.keys(ICONES).join(', ')}
 
-Responda SÓ com JSON: {"gesto": "...", "emocao": "...", "intensidade": 0 a 1, "icones": [até 3 da lista, ou vazio], "numero": "" ou curto, "pensamento": "o que você quis dizer, numa frase curta em português", "afeto": número de -0.05 a 0.05, "lembrar": "frase curta se valer guardar na memória, senão vazio", "importancia": 1 a 10 (1 = banal, 10 = marcante)}`
+Responda SÓ com JSON: {"gesto": "...", "emocao": "...", "intensidade": 0 a 1, "icones": [até 3 da lista, ou vazio], "numero": "" ou curto, "pensamento": "o que você quis dizer, numa frase curta em português", "afeto": número de -0.05 a 0.05, "lembrar": "frase curta se valer guardar na memória, senão vazio", "importancia": 1 a 10 (1 = banal, 10 = marcante), "acao": "" ou "jogo_melodia"}`
     const ex = (u, a) => [{ role: 'user', content: `${cfg.dono} disse: "${u}"` }, { role: 'assistant', content: JSON.stringify(a) }]
     const exemplos = [
       ...ex('Você gosta de música?', { gesto: 'sim', emocao: 'empolgado', intensidade: 0.8, icones: ['musica', 'coracao'], numero: '', pensamento: 'Amo! Ainda mais quando é animada.', afeto: 0.01, lembrar: '', importancia: 1 }),
@@ -1014,6 +1343,7 @@ Responda SÓ com JSON: {"gesto": "...", "emocao": "...", "intensidade": 0 a 1, "
       ...ex('Você é muito fofo', { gesto: 'timido', emocao: 'timido', intensidade: 0.8, icones: ['coracao'], numero: '', pensamento: 'Ai, para... (adorei).', afeto: 0.03, lembrar: '', importancia: 3 }),
       ...ex('Quanto é 2 mais 3?', { gesto: 'sim', emocao: 'orgulhoso', intensidade: 0.6, icones: [], numero: '5', pensamento: 'Essa eu sei: 5!', afeto: 0, lembrar: '', importancia: 1 }),
       ...ex('Quer jogar videogame comigo?', { gesto: 'pulinhos', emocao: 'empolgado', intensidade: 0.9, icones: ['jogo', 'ok'], numero: '', pensamento: 'Bora!!', afeto: 0.02, lembrar: '', importancia: 2 }),
+      ...ex('Bora jogar o jogo da melodia?', { gesto: 'pulinhos', emocao: 'empolgado', intensidade: 0.9, icones: ['musica', 'jogo'], numero: '', pensamento: 'Eba! Presta atenção nas notas.', afeto: 0.02, lembrar: '', importancia: 2, acao: 'jogo_melodia' }),
       ...ex('Você quer dormir?', { gesto: 'nao', emocao: 'feliz', intensidade: 0.5, icones: ['dormir', 'errado'], numero: '', pensamento: 'Ainda não, tô ligadão.', afeto: 0, lembrar: '', importancia: 1 }),
     ].map((m) => ({ ...m, content: m.content.replaceAll('Will', cfg.dono) }))
     conversa.push({ role: 'user', content: `${cfg.dono} disse: "${text}"` })
@@ -1051,13 +1381,9 @@ Responda SÓ com JSON: {"gesto": "...", "emocao": "...", "intensidade": 0 a 1, "
     foco = null; icone = null
     conversaAte = now() + 3000
     evento({ label: `respondeu a "${text.slice(0, 40)}"`, P: v[0] * k, A: v[1] * k, D: v[2] * k, interesse: 0.9, social: 0.12, expr: nome, gesto: gest, forcarGesto: true, icones: icns, numero: j.numero, som: nome, intens: k, dur: 4500 })
-  } catch (err) {
-    pushLog('Erro: ' + err.message)
-    legenda('Erro: ' + err.message)
-    conversaAte = now() + 1500
-    foco = { expr: 'triste', ate: now() + 2500 }; icone = { tipo: 'interrogacao', ate: now() + 2500 }
-    somDe('triste', 0.4)
-  }
+    vad.seguirAte = now() + 15000 // dá para continuar a conversa sem chamar de novo
+    if (j.acao === 'jogo_melodia') setTimeout(iniciarJogo, 2600)
+  } catch (err) { erroConversa(err) }
 }
 
 function legenda(txt) {
@@ -1105,7 +1431,7 @@ new MutationObserver(() => document.body.classList.toggle('painel', !$('#debug')
   .observe(document.body, { subtree: true, attributes: true, attributeFilter: ['hidden'] })
 document.querySelectorAll('[data-fechar]').forEach((b) => (b.onclick = () => { $('#debug').hidden = true; $('#cfg').hidden = true }))
 function abrirCfg() {
-  $('#cNome').value = cfg.nome; $('#cDono').value = cfg.dono; $('#cKey').value = cfg.key; $('#cStt').value = cfg.stt; $('#cLegenda').checked = !!cfg.legenda
+  $('#cNome').value = cfg.nome; $('#cDono').value = cfg.dono; $('#cKey').value = cfg.key; $('#cStt').value = cfg.stt; $('#cLegenda').checked = !!cfg.legenda; $('#cMaos').checked = !!cfg.maosLivres
   const sel = $('#cModel'); sel.innerHTML = ''; sel.add(new Option(cfg.model, cfg.model))
   $('#cfg').hidden = false; $('#debug').hidden = true
   if (cfg.key) carregarModelos()
@@ -1129,8 +1455,10 @@ $('#btnCfg').onclick = () => ($('#cfg').hidden ? abrirCfg() : ($('#cfg').hidden 
 $('#cClose').onclick = () => ($('#cfg').hidden = true)
 $('#cKey').onchange = () => { cfg.key = $('#cKey').value.trim(); store.set('cfg', cfg); carregarModelos() }
 $('#cModel').onchange = () => { cfg.model = $('#cModel').value; store.set('cfg', cfg) }
+$('#cMaos').onchange = () => { cfg.maosLivres = $('#cMaos').checked; store.set('cfg', cfg) }
+$('#btnJogo').onclick = () => (jogo ? fimDoJogo('parou') : iniciarJogo())
 $('#cSave').onclick = () => {
-  Object.assign(cfg, { nome: $('#cNome').value.trim() || 'Robô', dono: $('#cDono').value.trim() || 'Will', key: $('#cKey').value.trim(), model: $('#cModel').value, stt: $('#cStt').value.trim() || 'whisper-large-v3-turbo', legenda: $('#cLegenda').checked })
+  Object.assign(cfg, { nome: $('#cNome').value.trim() || 'Robô', dono: $('#cDono').value.trim() || 'Will', key: $('#cKey').value.trim(), model: $('#cModel').value, stt: $('#cStt').value.trim() || 'whisper-large-v3-turbo', legenda: $('#cLegenda').checked, maosLivres: $('#cMaos').checked })
   store.set('cfg', cfg); $('#cMsg').textContent = 'Salvo.'
 }
 let confirmarReset = 0
@@ -1160,6 +1488,12 @@ document.querySelectorAll('[data-sim]').forEach((b) => (b.onclick = () => {
   if (s === 'susto') bus.emit('susto', { label: 'teste' })
   if (s === 'pessoa') { pessoa.saiuEm = now() - 60000; bus.emit('face', { x: rnd(-0.5, 0.5), y: 0, tam: 0.3 }) }
   if (s === 'saiu') { pessoa.visto = 0; vigiarPresenca() }
+  if (s === 'escuro') { luz.simAte = now() + 60000; if (luz.base < 0) luz.base = 120; for (let i = 0; i < 4; i++) atualizarLuz(5) }
+  if (s === 'claro') { luz.simAte = now() + 3000; for (let i = 0; i < 6; i++) atualizarLuz(140) }
+  if (s === 'sorriso') { // finge um sorriso de 1 s na frente da câmera
+    pessoa.saiuEm = now(); rosto.ultimaReacao = -1e9
+    for (let i = 0; i <= 8; i++) setTimeout(() => bus.emit('face', { x: 0, y: 0, tam: 0.3, exp: { sorriso: 0.85, boca: 0.2, sobrancelha: 0.1, franzido: 0, piscou: 0 } }), i * 140)
+  }
   if (s === 'musica') { // finge uma música de 120 BPM por 15 s
     audio.testeAte = now() + 15000; audio.musica = true; audio.bpm = 120; ancora = now(); proxBeat = now(); centroides = [1800]
     bus.emit('musica_comecou', { label: 'teste 120 BPM' }); setTimeout(classificarEstilo, 1500)
@@ -1189,7 +1523,12 @@ Gostos       : ${Object.entries(P.gostos).map(([k, v]) => `${k} ${v.toFixed(2)}`
 Vida         : ${P.dias} dia(s) · confiança ${P.confianca.toFixed(2)}
 Necessidades : companhia ${N.social.toFixed(2)} · novidade ${N.estimulo.toFixed(2)} · energia ${N.energia.toFixed(2)}${desconforto() > 0 ? ' · incomodado' : ' · ok'}
 Habituação   : ${Object.entries(hab).map(([k, v]) => `${k} ${v.toFixed(1)}`).join(' · ') || '—'}
-Melodia fav. : ${P.melodia ? P.melodia.length + ' notas' : '—'}`
+Melodia fav. : ${P.melodia ? P.melodia.length + ' notas' : '—'} · recorde no jogo ${P.recordeMelodia || 0}
+Rosto        : ${pessoa.presente ? `sorriso ${rosto.sorriso.toFixed(2)} · franzido ${rosto.franzido.toFixed(2)} · ${humorDoRosto() || '…'}` : '—'}
+Luz          : ${luz.nivel < 0 ? '— (precisa da câmera)' : `${Math.round(luz.nivel)} (normal ${Math.round(luz.base)})${luz.escuro ? ' · escuro' : ''}`}
+Sua voz      : ${P.voz ? `aprendida em ${P.voz.n} fala(s)` : 'ainda não conhece'}${vozDono ? ` · última ${vozDono.tipo}` : ''}
+Mãos livres  : ${!cfg.maosLivres ? 'desligado' : !cfg.key ? 'precisa da chave' : vad.verificando ? 'conferindo se era com ele…' : vad.ativo ? 'ouvindo uma frase' : 'esperando o nome'} · ${vad.hora.length}/40 na hora${jogo ? `
+Jogo         : ${jogo.fase} · ${jogo.seq.length} notas` : ''}`
   $('#diario').textContent = [P.opiniao ? `Sobre ${cfg.dono}: ${P.opiniao}` : '', ...memorias.filter((m) => m.tipo === 'reflexao').slice(0, 6).map((m) => `${new Date(m.t).toLocaleDateString('pt-BR')} · ${m.txt}`)].filter(Boolean).join('\n') || 'Ainda não refletiu. Precisa da chave do Groq e de algumas lembranças.'
   $('#log').textContent = logLines.join('\n')
 }, 1000)
@@ -1210,6 +1549,7 @@ $('#btnStart').onclick = async () => {
     somDe(humor.P > 0 ? 'feliz' : 'entediado', 0.5)
     foco = { expr: 'surpreso', ate: now() + 900 }
     if (!cfg.key) pushLog('Dica: ⚙️ → chave do Groq para conversar pelo 🎤')
+    else if (cfg.maosLivres) pushLog(`Dica: é só chamar "${cfg.nome}" e falar`)
   } catch (e) {
     $('#start').querySelector('p').textContent = 'Não consegui usar o microfone: ' + e.message + '. Libere o microfone para este site e tente de novo.'
   }
