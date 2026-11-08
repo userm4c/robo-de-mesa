@@ -752,9 +752,9 @@ function ligarEscuta(src) {
       return
     }
     vad.chunks.push(x)
-    if (rms > Math.max(0.005, vad.piso * 2.5)) vad.ultimaFala = t
+    if (rms > Math.max(0.004, vad.piso * 2)) vad.ultimaFala = t
     if (!pode) { vad.ativo = false; vad.chunks = []; return } // ele mesmo fez barulho, ou começou outra coisa
-    if (t - vad.ultimaFala > 800 || t - vad.ini > 8000) fimDaFrase(t)
+    if (t - vad.ultimaFala > 1000 || t - vad.ini > 9000) fimDaFrase(t)
   }
 }
 const semAcento = (x) => x.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '')
@@ -785,7 +785,7 @@ async function fimDaFrase(t) {
   vad.ativo = false
   const chunks = vad.chunks, dur = vad.ultimaFala - vad.ini, resumo = prosoResumo(), seguindo = vad.ini < vad.seguirAte
   vad.chunks = []
-  if (dur < 400 || vad.vozes < 3) { if (dur >= 300) pushLog(`Mãos livres: descartei um som (${(dur / 1000).toFixed(1)} s, ${vad.vozes} trechos com voz)`); return } // barulho, não voz
+  if (dur < 180 || vad.vozes < 2) { if (dur >= 150) pushLog(`Mãos livres: descartei um som (${(dur / 1000).toFixed(1)} s, ${vad.vozes} trechos com voz)`); return } // barulho, não voz
   vad.hora = vad.hora.filter((x) => t - x < 3600000)
   if (vad.hora.length >= 40) { pushLog('Mãos livres: limite de 40 frases por hora (plano gratuito)'); return }
   vad.hora.push(t)
