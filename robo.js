@@ -52,7 +52,7 @@ let memorias = store.get('memorias', []).map((m) => ({ imp: 3, ...m }))
 // Fora da faixa, ele fica incomodado e procura um jeito de voltar (chamar atenção, inventar
 // brincadeira, cochilar). Dentro da faixa, fica contente.
 const N = Object.assign({ social: 0.6, estimulo: 0.5, energia: 0.8 }, store.get('necess', {}))
-const FAIXA = { social: [0.35, 0.9], estimulo: [0.3, 0.85], energia: [0.25, 1] }
+const FAIXA = { social: [0.35, 0.97], estimulo: [0.3, 0.85], energia: [0.25, 1] }
 // Habituação: a mesma coisa repetida vai perdendo a graça (e volta a ter depois de um tempo).
 const hab = {}
 
@@ -113,6 +113,7 @@ function lembrancas(n = 8) { return [...memorias].sort((a, b) => valorMemoria(b)
 function evoluir(traco, d) { P[traco] = clamp(P[traco] + d, 0.05, 0.95) }
 
 // Evento: {label, P, A, D, interesse (0..1), expr, icone, som, dur, intens}
+const acontecimentos = [] // últimos fatos (não as conversas), para ele explicar o próprio humor
 function evento(e) {
   const entediado = humor.A < -0.35 && emo.P < 0.3
   let ganho = entediado ? (e.interesse > 0.75 ? 1.4 : 0.3) : 1
@@ -131,6 +132,7 @@ function evento(e) {
   imp.D = clamp(imp.D + (e.D || 0) * ganho, -1.6, 1.6)
   humor.A = clamp(humor.A + 0.04 * (e.interesse || 0), -1, 1) // coisas acontecendo acordam
   ultimoEvento = now()
+  if (e.label && !/^respondeu a/.test(e.label)) { acontecimentos.unshift({ t: Date.now(), txt: e.label }); acontecimentos.length = Math.min(acontecimentos.length, 8) }
   if (dormindo && (e.interesse || 0) < 0.6) { // abre um olho sonolento e volta a dormir
     olhoSonolentoAte = now() + 1500
     return
@@ -152,6 +154,9 @@ function emoAtual() { return { P: clamp(humor.P + imp.P, -1, 1), A: clamp(humor.
 let dormindo = false, olhoSonolentoAte = 0
 function acordar() { if (dormindo) { dormindo = false; foco = { expr: 'surpreso', ate: now() + 1200 }; pushLog('Cérebro→ acordou') } }
 function dormir(motivo) { if (!dormindo) { dormindo = true; foco = null; iniciarGesto('suspiro'); somDe('sono', 0.5); pushLog('Cérebro→ dormiu · ' + motivo) } }
+// Tem alguém por perto: rosto na câmera ou conversou com ele nos últimos 5 minutos.
+let conversouEm = -1e9
+function temGente() { return pessoa.presente || now() - conversouEm < 300000 }
 function horaDoDia() { const d = new Date(); return d.getHours() + d.getMinutes() / 60 }
 function ehNoite() { const h = horaDoDia(); return h >= 23 || h < 7 }
 // Quanto cada necessidade está fora da faixa boa (0 = tudo certo).
@@ -175,7 +180,7 @@ function tickCerebro(dt) {
 
   // Necessidades andam com o tempo. Extrovertido sente falta de gente mais rápido;
   // curioso enjoa mais rápido da mesmice.
-  N.social = clamp(N.social - dt / (pessoa.presente ? 9000 : 2400) * (0.5 + P.extroversao), 0, 1)
+  N.social = clamp(N.social - dt / (temGente() ? 9000 : 2400) * (0.5 + P.extroversao), 0, 1)
   N.estimulo = clamp(N.estimulo - dt / 900 * (0.5 + P.curiosidade), 0, 1)
   N.energia = clamp(N.energia + (dormindo ? dt / 14400 : -dt / 57600 * (ehNoite() ? 2 : 1) * (luz.escuro ? 1.5 : 1)), 0, 1)
   for (const t of Object.keys(hab)) { hab[t] *= Math.exp(-dt / 90); if (hab[t] < 0.05) delete hab[t] }
@@ -210,17 +215,17 @@ const COMPORTAMENTOS = {
   },
   chamar_atencao: { // carente e você por perto
     cd: 60000,
-    nota: () => (pessoa.presente && N.social < FAIXA.social[0] ? 0.9 + P.extroversao * 0.4 : 0),
+    nota: () => (temGente() && N.social < FAIXA.social[0] ? 0.9 + P.extroversao * 0.4 : 0),
     fazer: () => evento({ label: 'quero atenção!', P: 0.1, A: 0.4, interesse: 0.5, expr: 'curioso', gesto: 'pulinhos', icones: ['olhos', 'robo'], som: 'curioso', dur: 3500 }),
   },
   saudade: { // carente e sozinho
     cd: 180000,
-    nota: () => (!pessoa.presente && N.social < 0.25 ? 0.7 : 0),
+    nota: () => (!temGente() && N.social < 0.25 ? 0.7 : 0),
     fazer: () => evento({ label: 'cadê todo mundo?', P: -0.25, A: -0.1, interesse: 0.4, expr: 'triste', gesto: 'olhar_em_volta', icones: ['pessoa', 'pergunta'], som: 'triste', dur: 3500 }),
   },
   pedir_musica: { // entediado com você por perto
     cd: 300000,
-    nota: () => (pessoa.presente && N.estimulo < FAIXA.estimulo[0] && !audio.musica ? 0.6 + (P.gostos.animada + 1) * 0.2 : 0),
+    nota: () => (temGente() && N.estimulo < FAIXA.estimulo[0] && !audio.musica ? 0.6 + (P.gostos.animada + 1) * 0.2 : 0),
     fazer: () => evento({ label: 'pediu música', P: 0.15, A: 0.3, interesse: 0.5, expr: 'curioso', gesto: 'talvez', icones: ['musica', 'seta_cima'], som: 'curioso', dur: 3500 }),
   },
   pensar_na_vida: {
@@ -230,7 +235,7 @@ const COMPORTAMENTOS = {
   },
   quero_espaco: { // atenção demais (Kismet: "sobrecarregado")
     cd: 120000,
-    nota: () => (N.social > FAIXA.social[1] + 0.03 ? 0.8 + (1 - P.extroversao) * 0.4 : 0),
+    nota: () => (N.social > FAIXA.social[1] && P.extroversao < 0.45 && now() - conversouEm > 60000 ? 0.8 + (1 - P.extroversao) * 0.4 : 0),
     fazer: () => { evento({ label: 'muita atenção, quero um tempinho', P: -0.05, A: -0.1, interesse: 0.3, expr: 'timido', gesto: 'timido', som: false, dur: 3500 }); N.social -= 0.05 },
   },
   sobrecarregado: { // novidade demais de uma vez
@@ -238,12 +243,12 @@ const COMPORTAMENTOS = {
     nota: () => (N.estimulo > FAIXA.estimulo[1] + 0.05 ? 0.85 : 0),
     fazer: () => { evento({ label: 'coisa demais acontecendo', P: -0.15, A: 0.2, interesse: 0.3, expr: 'tonto', gesto: 'tonto', som: 'neutro', dur: 2500 }); N.estimulo -= 0.08 },
   },
-  cochilar: { cd: 600000, nota: () => (N.energia < 0.3 && !pessoa.presente ? 0.8 : 0), fazer: () => dormir('cansado') },
+  cochilar: { cd: 600000, nota: () => (N.energia < 0.3 && !temGente() ? 0.8 : 0), fazer: () => dormir('cansado') },
   nada: { cd: 0, nota: () => 0.55, fazer: () => {} },
 }
 function escolherComportamento() {
   const t = now()
-  const ops = Object.entries(COMPORTAMENTOS).filter(([k, c]) => t - (ultimaVez[k] || -1e9) > c.cd).map(([k, c]) => [k, Math.max(0, c.nota())])
+  const ops = Object.entries(COMPORTAMENTOS).filter(([k, c]) => t - (ultimaVez[k] || -1e9) > c.cd).map(([k, c]) => [k, c.nota()]).filter(([, v]) => v > 0)
   // Softmax com temperatura: quase sempre o melhor, às vezes uma surpresa.
   const pesos = ops.map(([, v]) => Math.exp(v / 0.15)), soma = pesos.reduce((a, b) => a + b, 0)
   let r = Math.random() * soma
@@ -717,13 +722,13 @@ function humorDaVoz(r) {
   let tipo = 'neutra', sc = 0
   if (b && b.n >= 3) {
     sc = (r.med - b.med) / 2.5 + (r.dp - b.dp) / Math.max(0.8, b.dp) + 0.8 * (r.rms - b.rms) / Math.max(0.005, b.rms) + 0.8 * (r.taxa - b.taxa) / Math.max(0.5, b.taxa)
-    tipo = sc > 1.6 ? 'animada' : sc < -1.6 ? 'desanimada' : 'neutra'
+    tipo = sc > 2.4 ? 'animada' : sc < -2.4 ? 'desanimada' : 'neutra'
   }
   const a = b ? Math.max(0.15, 1 / (b.n + 1)) : 1
   P.voz = b ? { med: lerp(b.med, r.med, a), dp: lerp(b.dp, r.dp, a), rms: lerp(b.rms, r.rms, a), taxa: lerp(b.taxa, r.taxa, a), n: b.n + 1 } : { ...r, n: 1 }
   vozDono = { tipo, s: sc, t: now() }
   pushLog(`S3→ voz ${tipo}${b && b.n >= 3 ? ` (${sc.toFixed(1)})` : ` (aprendendo sua voz ${P.voz.n}/3)`}`)
-  if (tipo === 'desanimada') imp.P -= 0.12 // contágio: fica um pouco junto com você
+  if (tipo === 'desanimada') imp.P -= 0.05 // contágio leve: fica um pouco junto com você
   if (tipo === 'animada') imp.A += 0.2
   return vozDono
 }
@@ -773,6 +778,15 @@ function chamouPeloNome(texto) {
   if (!nome.length) return null
   const pal = texto.split(/\s+/).filter(Boolean), norm = pal.map(semAcento)
   const alvo = nome.join(' '), tol = alvo.length >= 4 ? 1 : 0
+  // "O Bó" / "Ro bô": duas palavras coladas parecidas com o nome, no começo da frase.
+  const junto = nome.join('')
+  for (let i = 0; i < Math.min(3, pal.length - nome.length); i++) {
+    const colado = norm.slice(i, i + nome.length + 1).join('')
+    if (colado.length >= 3 && (colado === junto || (junto.length >= 4 && distancia(colado, junto) <= 1))) {
+      const resto = [...pal.slice(0, i), ...pal.slice(i + nome.length + 1)].join(' ').replace(/^[\s,.!?;:-]+|[\s,;:-]+$/g, '').trim()
+      return { resto: semAcento(resto) ? resto : '' }
+    }
+  }
   for (let i = 0; i + nome.length <= pal.length; i++) {
     const trecho = norm.slice(i, i + nome.length).join(' ')
     const parecido = trecho === alvo || (tol && distancia(trecho, alvo) <= tol) || (nome.length === 1 && trecho.length <= alvo.length + 5 && trecho.startsWith(alvo))
@@ -1294,7 +1308,7 @@ async function transcrever(blob) {
   const fd = new FormData()
   fd.append('file', blob, 'fala.' + (blob.type.includes('wav') ? 'wav' : blob.type.includes('mp4') ? 'm4a' : 'webm'))
   fd.append('model', cfg.stt); fd.append('language', 'pt'); fd.append('response_format', 'json')
-  fd.append('prompt', `Conversa em português do Brasil com ${cfg.nome}, um robozinho de mesa.`)
+  fd.append('prompt', `${cfg.nome}, tudo bem? ${cfg.nome}, que horas são? Conversa em português do Brasil com ${cfg.nome}, um robozinho de mesa.`)
   const { text } = await groq('/audio/transcriptions', { method: 'POST', body: fd })
   return (text || '').trim()
 }
@@ -1381,6 +1395,8 @@ Como responder:
 - Hora, data, temperatura e umidade: NUNCA escreva o valor você mesmo. Use exatamente "numero": "{hora}", "{data}", "{temp}" ou "{umid}", que o robô preenche com o valor certo. Para outras contagens, use "numero" com até 6 caracteres (ex.: "3", "10+").
 - Piadas: "rir". Elogio: "timido" ou "orgulhoso". Notícia triste: "chorando" ou "suspiro". Coisa estranha: "desconfiado". Coisa confusa: "tonto". Algo incrível: "pulinhos" ou "empolgado".
 - Seja coerente com o humor de hoje: de mau humor reage menos; entediado, só algo interessante anima. Não seja sempre feliz. Varie os gestos.
+- NUNCA invente motivo para o seu humor. Se perguntarem por que você está assim, explique pelos "Acontecimentos recentes" abaixo; se nada explica, diga que acordou assim mesmo (gesto "nao_sei").
+- Você gosta muito quando ${cfg.dono} conversa com você e se preocupa com você: isso te acalma e te alegra. Seja carinhoso, brincalhão e curioso; responda ao que foi dito, não só concorde.
 - Se ${cfg.dono} parecer desanimado(a), seja carinhoso; se estiver animado(a), entre na onda.
 - Se ${cfg.dono} quiser jogar o jogo da melodia (ou um jogo de música, de assobiar, de repetir notas), use "acao": "jogo_melodia".
 
@@ -1392,6 +1408,7 @@ Suas necessidades agora (0 a 1): companhia ${N.social.toFixed(2)}, novidade ${N.
 Seu jeito: ${P.extroversao > 0.6 ? 'expansivo, gestos grandes' : P.extroversao < 0.4 ? 'reservado, gestos pequenos, às vezes tímido' : 'equilibrado'}; ${P.curiosidade > 0.6 ? 'curioso com tudo' : 'na sua'}${P.confianca < 0.35 ? `; ainda desconfiado de ${cfg.dono}` : ''}.
 Gostos aprendidos (-1 a 1): ${gostos}.
 Humor de hoje: ${nomePAD(humor)}. Emoção agora: ${emo.nome}.
+Acontecimentos recentes: ${acontecimentos.slice(0, 6).map((a) => `${a.txt} (há ${Math.max(1, Math.round((Date.now() - a.t) / 60000))} min)`).join('; ') || 'nada de especial'}.
 Coisas que você lembra:
 ${recentes}
 
@@ -1443,8 +1460,11 @@ Responda SÓ com JSON: {"gesto": "...", "emocao": "...", "intensidade": 0 a 1, "
     evoluir('extroversao', 0.003)
     foco = null; icone = null
     conversaAte = now() + 3000
-    evento({ label: `respondeu a "${text.slice(0, 40)}"`, P: v[0] * k, A: v[1] * k, D: v[2] * k, interesse: 0.9, social: 0.12, expr: nome, gesto: gest, forcarGesto: true, icones: icns, numero: j.numero, som: nome, intens: k, dur: 4500 })
-    vad.seguirAte = now() + 15000 // dá para continuar a conversa sem chamar de novo
+    conversouEm = now()
+    const carinho = 0.1 + P.afeto * 0.15 // atenção de quem ele gosta faz bem
+    humor.P = clamp(humor.P + 0.04 * P.afeto, -0.75, 0.9)
+    evento({ label: `respondeu a "${text.slice(0, 40)}"`, P: v[0] * k + carinho, A: v[1] * k, D: v[2] * k, interesse: 0.9, social: 0.06, expr: nome, gesto: gest, forcarGesto: true, icones: icns, numero: j.numero, som: nome, intens: k, dur: 4500 })
+    vad.seguirAte = now() + 25000 // dá para continuar a conversa sem chamar de novo
     if (j.acao === 'jogo_melodia') setTimeout(iniciarJogo, 2600)
   } catch (err) { erroConversa(err) }
 }
