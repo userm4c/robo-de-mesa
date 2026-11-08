@@ -17,7 +17,7 @@ const store = {
 }
 
 // ---------------------------------------------------------------- barramento
-const VERSAO = 'v9 · 08/11'
+const VERSAO = 'v10 · 08/11'
 const logLines = []
 const filaLog = [] // tudo o que aconteceu desde o último envio para o log remoto
 function pushLog(s) {
@@ -54,7 +54,13 @@ function guardarChave(k, origem) {
   return true
 }
 if (!chaveValida(cfg.key)) cfg.key = chaveValida(store.get('chave', '')) ? store.get('chave', '') : ''
-{ const m = location.hash.match(/chave=(gsk_[A-Za-z0-9]+)/); if (m) guardarChave(m[1], 'link') }
+let chaveReserva = ''
+{
+  const m = location.hash.match(/chave=(gsk_[A-Za-z0-9]+)/), ruins = store.get('chavesRuins', [])
+  if (m && ruins.includes(m[1])) pushLog('Seu link pessoal tem uma chave do Groq antiga (recusada). Toque em ⚙️ → "Copiar meu link com a chave" para atualizar o link.')
+  else if (m && chaveValida(cfg.key) && m[1] !== cfg.key) chaveReserva = m[1] // guarda a do link como reserva; vale a que já estava salva
+  else if (m) guardarChave(m[1], 'link')
+}
 { const m = location.hash.match(/log=((?:github_pat_|ghp_)[A-Za-z0-9_]+)/); if (m && m[1] !== cfg.logToken) { cfg.logToken = m[1]; store.set('cfg', cfg); store.set('logToken', m[1]) } }
 if (!cfg.logToken && store.get('logToken', '')) cfg.logToken = store.get('logToken', '')
 cfg.logRepo ||= 'userm4c/robo-logs'
@@ -77,7 +83,7 @@ navigator.storage?.persist?.().then((v) => (dadosProtegidos = v)).catch(() => {}
 const PERS_PADRAO = { extroversao: 0.6, curiosidade: 0.7, energia: 0.6, sensibilidade: 0.5, afeto: 0.5, gostos: { calma: 0, animada: 0, pesada: 0, cantarolar: 0, assobio: 0 }, nasceu: Date.now(), dias: 0 }
 let P = Object.assign(structuredClone(PERS_PADRAO), { confianca: 0.5, melodia: null, opiniao: '', ultimaReflexao: 0 }, store.get('pers', {}))
 P.gostos = Object.assign({}, PERS_PADRAO.gostos, P.gostos)
-let memorias = store.get('memorias', []).map((m) => ({ imp: 3, ...m }))
+let memorias = store.get('memorias', []).map((m) => ({ imp: 3, ...m })).filter((m) => m.tipo !== 'fato' || (m.imp >= 2 && String(m.txt).length >= 12)) // tira lembranças banais ou quebradas
 
 // Necessidades (inspirado nos "drives" do Kismet, do MIT): cada uma tem uma faixa boa.
 // Fora da faixa, ele fica incomodado e procura um jeito de voltar (chamar atenção, inventar
@@ -120,7 +126,7 @@ if (!humor || humor.dia !== hoje) {
   P.dias++
   store.set('humor', humor); store.set('pers', P)
 }
-humor.P = clamp(humor.P, -0.4, 0.9) // não acorda travado no extremo
+humor.P = clamp(lerp(humor.P, 0.1 + (P.afeto - 0.5) * 0.4, 0.5), -0.4, 0.9); humor.A = lerp(humor.A, 0, 0.4) // acorda mais perto do jeito normal dele
 humor.nomeInicial = nomePAD(humor)
 
 const imp = { P: 0, A: 0, D: 0 } // impulso das emoções, decai
@@ -200,7 +206,7 @@ function ehNoite() { const h = horaDoDia(); return h >= 23 || h < 7 }
 // Quanto cada necessidade está fora da faixa boa (0 = tudo certo).
 function desconforto() {
   let d = 0
-  for (const k of Object.keys(FAIXA)) { const [lo, hi] = FAIXA[k]; if (N[k] < lo) d += (lo - N[k]) / lo; else if (N[k] > hi) d += 0.4 * (N[k] - hi) / (1 - hi) }
+  for (const k of Object.keys(FAIXA)) { const [lo, hi] = FAIXA[k]; if (N[k] < lo) d += (lo - N[k]) / lo; else if (N[k] > hi && !(k === 'social' && now() - conversouEm < 180000)) d += 0.4 * (N[k] - hi) / (1 - hi) }
   return d
 }
 
@@ -848,20 +854,21 @@ function chamouPeloNome(texto) {
   if (!nome.length) return null
   const pal = texto.split(/\s+/).filter(Boolean), norm = pal.map(semAcento)
   const alvo = nome.join(' '), tol = alvo.length >= 4 ? 1 : 0
+  const fon = (x) => x.replace(/y/g, 'i').replace(/(.)\1+/g, '$1').replace(/e$/, 'i') // como soa ("Bobby" ≈ "Bob-e")
+  for (let i = 0; i + nome.length <= pal.length; i++) {
+    const trecho = norm.slice(i, i + nome.length).join(' ')
+    const parecido = trecho === alvo || (tol && distancia(fon(trecho), fon(alvo)) <= tol) || (nome.length === 1 && trecho.length <= alvo.length + 5 && trecho.startsWith(alvo))
+    if (parecido) {
+      const resto = [...pal.slice(0, i), ...pal.slice(i + nome.length)].join(' ').replace(/^[\s,.!?;:-]+|[\s,;:-]+$/g, '').trim()
+      return { resto: semAcento(resto) ? resto : '' }
+    }
+  }
   // "O Bó" / "Ro bô": duas palavras coladas parecidas com o nome, no começo da frase.
   const junto = nome.join('')
   for (let i = 0; i < Math.min(3, pal.length - nome.length); i++) {
     const colado = norm.slice(i, i + nome.length + 1).join('')
-    if (colado.length >= 3 && (colado === junto || (junto.length >= 4 && distancia(colado, junto) <= 1))) {
+    if (colado.length >= 3 && (colado === junto || (junto.length >= 4 && distancia(fon(colado), fon(junto)) <= 1))) {
       const resto = [...pal.slice(0, i), ...pal.slice(i + nome.length + 1)].join(' ').replace(/^[\s,.!?;:-]+|[\s,;:-]+$/g, '').trim()
-      return { resto: semAcento(resto) ? resto : '' }
-    }
-  }
-  for (let i = 0; i + nome.length <= pal.length; i++) {
-    const trecho = norm.slice(i, i + nome.length).join(' ')
-    const parecido = trecho === alvo || (tol && distancia(trecho, alvo) <= tol) || (nome.length === 1 && trecho.length <= alvo.length + 5 && trecho.startsWith(alvo))
-    if (parecido) {
-      const resto = [...pal.slice(0, i), ...pal.slice(i + nome.length)].join(' ').replace(/^[\s,.!?;:-]+|[\s,;:-]+$/g, '').trim()
       return { resto: semAcento(resto) ? resto : '' }
     }
   }
@@ -1359,7 +1366,11 @@ let conversaAte = 0 // enquanto pensa e responde, o ouvido não reage a mais nad
 let streamFala = null
 async function groq(path, opts) {
   const r = await fetch('https://api.groq.com/openai/v1' + path, { ...opts, headers: { Authorization: 'Bearer ' + cfg.key, ...(opts?.headers || {}) } })
-  if (!r.ok) throw new Error(`Groq ${r.status}: ${(await r.text()).slice(0, 160)}`)
+  if (r.status === 401 && !opts?.jaTrocou) { // chave recusada: anota e tenta a reserva, se houver
+    const ruins = store.get('chavesRuins', []); if (!ruins.includes(cfg.key)) store.set('chavesRuins', [...ruins, cfg.key].slice(-5))
+    if (chaveValida(chaveReserva) && chaveReserva !== cfg.key) { pushLog(`Chave …${cfg.key.slice(-4)} recusada; usando …${chaveReserva.slice(-4)}`); guardarChave(chaveReserva, 'reserva'); chaveReserva = ''; return groq(path, { ...opts, jaTrocou: true }) }
+  }
+  if (!r.ok) throw new Error(`Groq ${r.status}: ${(await r.text()).slice(0, 420)}`)
   return r.json()
 }
 
@@ -1399,6 +1410,11 @@ async function processarFala(blob, vh) {
   await responder(text, vh)
 }
 function erroConversa(err) {
+  if (/Groq 429/.test(err.message)) {
+    pushLog('Erro: limite do Groq por minuto (todos os modelos ocupados)')
+    conversaAte = now() + 1500
+    return evento({ label: 'pensei demais, preciso de um minutinho', P: -0.05, A: -0.1, interesse: 0.4, expr: 'tonto', gesto: 'tonto', forcarGesto: true, icones: ['ampulheta', 'cerebro'], dur: 3000 })
+  }
   pushLog('Erro: ' + err.message)
   setTimeout(() => enviarLog('erro na conversa'), 3000)
   legenda('Erro: ' + err.message)
@@ -1421,18 +1437,39 @@ const ESQUEMA = () => ({
   },
 })
 const formatoOk = {} // por modelo e pedido: qual formato o Groq aceitou
+// Limite do plano gratuito (tokens por minuto, por modelo): quando estoura, aquele modelo "esfria"
+// pelo tempo que o Groq pedir e a conversa continua em outro modelo bom.
+const esfriando = {}
+function modeloLivre(atual) {
+  const lista = MODELOS_BONS.map((re) => modelosGroq.find((i) => re.test(i))).filter(Boolean)
+  if (!(esfriando[atual] > Date.now())) return atual
+  return lista.find((m) => !(esfriando[m] > Date.now())) || atual
+}
 async function pedirJSON(messages, nome, esquema, extra = {}) {
-  const base = { model: cfg.model, temperature: 0.5, max_completion_tokens: 1400, messages, ...extra }
-  if (/gpt-oss/i.test(cfg.model)) base.reasoning_effort = 'low'
-  const formatos = [{ type: 'json_schema', json_schema: { name: nome, strict: /gpt-oss/i.test(cfg.model), schema: esquema } }, { type: 'json_object' }, null]
-  const chave = cfg.model + nome
-  let erro
-  for (let i = formatoOk[chave] ?? 0; i < formatos.length; i++) {
+  let modelo = modeloLivre(cfg.model), erro
+  for (let tentativa = 0; tentativa < 4; tentativa++) {
+    const gpt = /gpt-oss/i.test(modelo)
+    const base = { model: modelo, temperature: 0.5, max_completion_tokens: 1400, messages, ...extra, ...(gpt ? { reasoning_effort: 'low' } : {}) }
+    const formatos = [{ type: 'json_schema', json_schema: { name: nome, strict: gpt, schema: esquema } }, { type: 'json_object' }, null]
+    const chave = modelo + nome
     try {
-      const r = await groq('/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(formatos[i] ? { ...base, response_format: formatos[i] } : base) })
-      formatoOk[chave] = i
-      return r
-    } catch (e) { erro = e; if (!/Groq 400/.test(e.message)) throw e }
+      for (let i = formatoOk[chave] ?? 0; i < formatos.length; i++) {
+        try {
+          const r = await groq('/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(formatos[i] ? { ...base, response_format: formatos[i] } : base) })
+          formatoOk[chave] = i; r.modelo = modelo
+          return r
+        } catch (e) { erro = e; if (!/Groq 400/.test(e.message) || i === formatos.length - 1) throw e }
+      }
+    } catch (e) {
+      erro = e
+      if (!/Groq 429/.test(e.message)) throw e
+      const m = /try again in (?:(\d+)m)?([\d.]+)s/i.exec(e.message), seg = m ? (+m[1] || 0) * 60 + +m[2] : 60
+      esfriando[modelo] = Date.now() + seg * 1000 + 500
+      const outro = modeloLivre(modelo)
+      if (outro !== modelo) { pushLog(`Groq: limite por minuto do ${modelo.split('/').pop()} (volta em ${Math.ceil(seg)} s); usando ${outro.split('/').pop()}`); modelo = outro; continue }
+      if (seg <= 12) { pushLog(`Groq: limite por minuto; esperando ${Math.ceil(seg)} s`); await new Promise((ok) => setTimeout(ok, seg * 1000 + 300)); continue }
+      throw e
+    }
   }
   throw erro
 }
@@ -1509,10 +1546,10 @@ Coisas que você lembra:
 ${recentes}
 ${estadoVida()}
 
-GESTOS: ${Object.keys(GESTOS).join(', ')}, nenhum
+${/gpt-oss/i.test(modeloLivre(cfg.model)) ? '(Gestos, emoções, ícones e emotes: só os permitidos pelo formato da resposta.)' : `GESTOS: ${Object.keys(GESTOS).join(', ')}, nenhum
 EMOÇÕES: ${EMOCOES.join(', ')}
 ÍCONES: ${Object.keys(ICONES).join(', ')}
-EMOTES: ${Object.keys(EMOTES).join(', ')}
+EMOTES: ${Object.keys(EMOTES).join(', ')}`}
 DATAS (ids): ${DATAS.map((d) => `${d.id} (${nomeData(d.id)})`).join(', ')}
 ELEMENTOS de decoração: ${ELEMENTOS.join(', ')}. CORES: ${Object.entries(NOME_COR).map(([k, v]) => `${k}=${v}`).join(', ')}
 
@@ -1521,22 +1558,18 @@ Responda SÓ com JSON: {"gesto": "...", "emocao": "...", "intensidade": 0 a 1, "
     const exemplos = [
       ...ex('Você gosta de música?', { gesto: 'sim', emocao: 'empolgado', intensidade: 0.8, icones: ['musica', 'coracao'], numero: '', pensamento: 'Amo! Ainda mais quando é animada.', afeto: 0.01, lembrar: '', importancia: 1 }),
       ...ex('Que horas são?', { gesto: 'nenhum', emocao: 'contente', intensidade: 0.4, icones: ['relogio'], numero: '{hora}', pensamento: 'Mostrei a hora.', afeto: 0, lembrar: '', importancia: 1 }),
-      ...ex('Vai chover hoje?', { gesto: 'nao_sei', emocao: 'curioso', intensidade: 0.5, icones: ['nuvem', 'chuva', 'pergunta'], numero: '', pensamento: 'Não sei, não consigo ver o céu daqui.', afeto: 0, lembrar: '', importancia: 1 }),
       ...ex('Hoje eu tive um dia horrível no trabalho', { gesto: 'suspiro', emocao: 'triste', intensidade: 0.7, icones: ['trabalho', 'coracao_partido', 'abraco'], numero: '', pensamento: 'Poxa... queria te dar um abraço.', afeto: 0.03, lembrar: 'Will teve um dia ruim no trabalho', importancia: 6 }),
       ...ex('Você é muito fofo', { gesto: 'timido', emocao: 'timido', intensidade: 0.8, icones: ['coracao'], numero: '', pensamento: 'Ai, para... (adorei).', afeto: 0.03, lembrar: '', importancia: 3 }),
-      ...ex('Quanto é 2 mais 3?', { gesto: 'sim', emocao: 'orgulhoso', intensidade: 0.6, icones: [], numero: '5', pensamento: 'Essa eu sei: 5!', afeto: 0, lembrar: '', importancia: 1 }),
-      ...ex('Quer jogar videogame comigo?', { gesto: 'pulinhos', emocao: 'empolgado', intensidade: 0.9, icones: ['jogo', 'ok'], numero: '', pensamento: 'Bora!!', afeto: 0.02, lembrar: '', importancia: 2 }),
       ...ex('Bora jogar o jogo da melodia?', { gesto: 'pulinhos', emocao: 'empolgado', intensidade: 0.9, icones: ['musica', 'jogo'], numero: '', pensamento: 'Eba! Presta atenção nas notas.', afeto: 0.02, lembrar: '', importancia: 2, acao: 'jogo_melodia' }),
       ...ex('O que você imaginou hoje?', { gesto: 'pulinhos', emocao: 'empolgado', intensidade: 0.7, icones: ['ideia', 'livro'], numero: '', pensamento: 'Imaginei uma coisa! Olha só.', afeto: 0.01, lembrar: '', importancia: 1, acao: 'contar_historia' }),
       ...ex('Que barulho foi esse que te assustou?', { gesto: 'nao_sei', emocao: 'medo', intensidade: 0.6, icones: ['olhos', 'pergunta'], numero: '', pensamento: 'Esse aqui, ó… você sabe o que é?', afeto: 0, lembrar: '', importancia: 2, acao: 'repetir_som', espera_resposta: true }),
-      ...ex('Você quer dormir?', { gesto: 'nao', emocao: 'feliz', intensidade: 0.5, icones: ['dormir', 'errado'], numero: '', pensamento: 'Ainda não, tô ligadão.', afeto: 0, lembrar: '', importancia: 1 }),
     ].map((m) => ({ ...m, content: m.content.replaceAll('Will', cfg.dono) }))
     conversa.push({ role: 'user', content: `${cfg.dono} disse: "${text}"` })
-    const r = await pedirReacao([{ role: 'system', content: sys }, ...exemplos, ...conversa.slice(-10)])
+    const r = await pedirReacao([{ role: 'system', content: sys }, ...exemplos, ...conversa.slice(-8)])
     const bruto = r.choices[0].message.content
-    pushLog(`Groq (${cfg.model.split('/').pop()}): ${bruto.slice(0, 300)}`)
+    pushLog(`Groq (${(r.modelo || cfg.model).split('/').pop()} · ${r.usage?.total_tokens ?? '?'} tokens): ${bruto.slice(0, 300)}`)
     const j = JSON.parse((bruto.match(/\{[\s\S]*\}/) || [bruto])[0])
-    conversa.push({ role: 'assistant', content: bruto }); conversa = conversa.slice(-10)
+    conversa.push({ role: 'assistant', content: JSON.stringify({ gesto: j.gesto, emocao: j.emocao, icones: j.icones, pensamento: j.pensamento }) }); conversa = conversa.slice(-8)
     const nome = EMOCOES.includes(j.emocao) ? j.emocao : 'curioso'
     const gest = GESTOS[j.gesto] ? j.gesto : 'nenhum'
     const icns = Array.isArray(j.icones) ? j.icones.filter((x) => ICONES[x]).slice(0, 3) : []
@@ -1558,7 +1591,7 @@ Responda SÓ com JSON: {"gesto": "...", "emocao": "...", "intensidade": 0 a 1, "
     legenda(`${cfg.nome}: ${j.pensamento || '…'}`)
     pushLog(`${cfg.nome}: ${j.pensamento || '…'} [${gest} · ${nome} ${k.toFixed(1)}${icns.length ? ' · ' + icns.map((x) => ICONES[x]).join('') : ''}${j.numero ? ' · ' + j.numero : ''}]`)
     P.afeto = clamp(P.afeto + clamp(+j.afeto || 0, -0.02, 0.02), 0.05, 0.95)
-    if (j.lembrar) lembrar(j.lembrar, clamp(Math.round(+j.importancia || 4), 1, 10))
+    if (j.lembrar && String(j.lembrar).length >= 12 && (+j.importancia || 4) >= 3) lembrar(j.lembrar, clamp(Math.round(+j.importancia || 4), 1, 10))
     evoluir('extroversao', 0.003)
     foco = null; icone = null
     conversaAte = now() + 1500
@@ -1599,7 +1632,7 @@ function estadoVida() {
   const conhecidos = sons.filter((s) => s.significado).map((s) => s.significado)
   out.push(`Barulhos que você já entende: ${conhecidos.join('; ') || 'nenhum'}.${sons.some((s) => !s.significado && s.vezes >= 2) ? ' Tem um barulho que te assusta e você não sabe o que é.' : ''}`)
   const hist = memorias.filter((m) => m.historia).slice(0, 3)
-  if (hist.length) out.push(`Histórias suas (devaneios e sonhos), para contar se pedirem: ${hist.map((m) => `${m.historia.tipo}: ${m.historia.titulo} — ${m.historia.resumo}`).join(' | ')}.`)
+  if (hist.length) out.push(`Histórias suas, para contar se pedirem: ${hist.map((m) => `${m.historia.tipo} "${m.historia.titulo}"`).join(', ')}.`)
   const vest = Object.keys(vestido); if (vest.length) out.push(`Você está usando: ${vest.join(', ')}.`)
   return out.join('\n')
 }
