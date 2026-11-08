@@ -17,7 +17,7 @@ const store = {
 }
 
 // ---------------------------------------------------------------- barramento
-const VERSAO = 'v10 · 08/11'
+const VERSAO = 'v11 · 08/11'
 const logLines = []
 const filaLog = [] // tudo o que aconteceu desde o último envio para o log remoto
 function pushLog(s) {
@@ -857,7 +857,8 @@ function chamouPeloNome(texto) {
   const fon = (x) => x.replace(/y/g, 'i').replace(/(.)\1+/g, '$1').replace(/e$/, 'i') // como soa ("Bobby" ≈ "Bob-e")
   for (let i = 0; i + nome.length <= pal.length; i++) {
     const trecho = norm.slice(i, i + nome.length).join(' ')
-    const parecido = trecho === alvo || (tol && distancia(fon(trecho), fon(alvo)) <= tol) || (nome.length === 1 && trecho.length <= alvo.length + 5 && trecho.startsWith(alvo))
+    const ponta = i <= 1 || i + nome.length >= pal.length // nome parecido só vale no começo ou no fim
+    const parecido = trecho === alvo || (ponta && ((tol && distancia(fon(trecho), fon(alvo)) <= tol) || (nome.length === 1 && trecho.length <= alvo.length + 5 && trecho.startsWith(alvo))))
     if (parecido) {
       const resto = [...pal.slice(0, i), ...pal.slice(i + nome.length)].join(' ').replace(/^[\s,.!?;:-]+|[\s,;:-]+$/g, '').trim()
       return { resto: semAcento(resto) ? resto : '' }
@@ -1510,7 +1511,9 @@ async function responder(text, vh, contexto) {
   try {
     const traços = `extroversão ${P.extroversao.toFixed(2)}, curiosidade ${P.curiosidade.toFixed(2)}, energia ${P.energia.toFixed(2)}, sensibilidade ${P.sensibilidade.toFixed(2)}, afeto por ${cfg.dono} ${P.afeto.toFixed(2)}`
     const gostos = Object.entries(P.gostos).map(([k, v]) => `${k} ${v.toFixed(2)}`).join(', ')
-    const recentes = lembrancas(10).map((m) => `- ${m.tipo === 'reflexao' ? '(reflexão) ' : ''}${m.txt}`).join('\n') || '- nada marcante ainda'
+    const sobreDeco = ctx?.tipo === 'deco' || /decor|enfeit|natal|ano.?novo|carnaval|p[áa]scoa|junina|halloween|namorad|crian[çc]as|festa|luzinha|pisca/i.test(text)
+    const sobreAniv = /anivers|nasci/i.test(text)
+    const recentes = lembrancas(6).map((m) => `- ${m.tipo === 'reflexao' ? '(reflexão) ' : ''}${m.txt}`).join('\n') || '- nada marcante ainda'
     const agora = new Date()
     const quando = agora.toLocaleString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })
     const sys = `Você é ${cfg.nome}, um robozinho de mesa com personalidade própria, que mora na mesa de ${cfg.dono}.
@@ -1529,8 +1532,8 @@ Como responder:
 - Vocês estão numa conversa: ${cfg.dono} não precisa dizer seu nome. Se você fizer uma pergunta de volta e quiser esperar a resposta, use "espera_resposta": true.
 - "emote": em momentos FORTES (rir muito, se apaixonar, chorar, ficar furioso, levar susto, ficar chocado, ganhar presente), troque o rosto por um emote pixelado. No máximo 1 a cada 3 respostas; no resto, "".
 - Outras ações: "repetir_som" (${cfg.dono} quer ouvir o barulho que te assustou), "contar_historia" (quer saber o que você imaginou ou sonhou), "boa_noite" (disse boa noite ou mandou você dormir), "toca_aqui" (bater na mão), "devanear" (pediu para você imaginar algo), "decorar" (pediu para decorar a tela).
-- Se ${cfg.dono} der uma ideia para a decoração da tela (desta data ou de outra data comemorativa), preencha "sugestao" com o id da data, a ideia e, se souber, elementos e cores; senão deixe "sugestao" com tudo vazio.
-- Se ${cfg.dono} disser o dia do aniversário dele(a), preencha "aniversario_dono" com "DD/MM"; senão "".
+${sobreDeco ? `- Se ${cfg.dono} der uma ideia para a decoração da tela (desta data ou de outra data comemorativa), preencha "sugestao" com o id da data, a ideia e, se souber, elementos e cores; senão deixe "sugestao" com tudo vazio.` : '- Deixe "sugestao" com tudo vazio.'}
+${sobreAniv ? `- Se ${cfg.dono} disser o dia do aniversário dele(a), preencha "aniversario_dono" com "DD/MM"; senão "".` : '- "aniversario_dono": "".'}
 ${contextoTexto(ctx)}
 
 Agora: ${quando}. Temperatura ${clima.temp} °C, umidade ${clima.umid} %. ${audio.musica ? `Está tocando música ${audio.estilo} (${audio.bpm} BPM).` : ''}
@@ -1550,8 +1553,8 @@ ${/gpt-oss/i.test(modeloLivre(cfg.model)) ? '(Gestos, emoções, ícones e emote
 EMOÇÕES: ${EMOCOES.join(', ')}
 ÍCONES: ${Object.keys(ICONES).join(', ')}
 EMOTES: ${Object.keys(EMOTES).join(', ')}`}
-DATAS (ids): ${DATAS.map((d) => `${d.id} (${nomeData(d.id)})`).join(', ')}
-ELEMENTOS de decoração: ${ELEMENTOS.join(', ')}. CORES: ${Object.entries(NOME_COR).map(([k, v]) => `${k}=${v}`).join(', ')}
+${sobreDeco ? `DATAS (ids): ${DATAS.map((d) => `${d.id} (${nomeData(d.id)})`).join(', ')}
+ELEMENTOS de decoração: ${ELEMENTOS.join(', ')}. CORES: ${Object.entries(NOME_COR).map(([k, v]) => `${k}=${v}`).join(', ')}` : ''}
 
 Responda SÓ com JSON: {"gesto": "...", "emocao": "...", "intensidade": 0 a 1, "icones": [até 3 da lista, ou vazio], "numero": "" ou curto, "pensamento": "o que você quis dizer, numa frase curta em português", "afeto": número de -0.05 a 0.05, "lembrar": "frase curta se valer guardar na memória, senão vazio", "importancia": 1 a 10 (1 = banal, 10 = marcante), "acao": "" ou uma das ações, "emote": "" ou um emote, "espera_resposta": true/false, "som_significado": "", "opiniao_deco": "", "sugestao": {"data": "", "ideia": "", "elementos": [], "cores": []}, "aniversario_dono": ""}`
     const ex = (u, a) => [{ role: 'user', content: `${cfg.dono} disse: "${u}"` }, { role: 'assistant', content: JSON.stringify(a) }]
@@ -1559,8 +1562,6 @@ Responda SÓ com JSON: {"gesto": "...", "emocao": "...", "intensidade": 0 a 1, "
       ...ex('Você gosta de música?', { gesto: 'sim', emocao: 'empolgado', intensidade: 0.8, icones: ['musica', 'coracao'], numero: '', pensamento: 'Amo! Ainda mais quando é animada.', afeto: 0.01, lembrar: '', importancia: 1 }),
       ...ex('Que horas são?', { gesto: 'nenhum', emocao: 'contente', intensidade: 0.4, icones: ['relogio'], numero: '{hora}', pensamento: 'Mostrei a hora.', afeto: 0, lembrar: '', importancia: 1 }),
       ...ex('Hoje eu tive um dia horrível no trabalho', { gesto: 'suspiro', emocao: 'triste', intensidade: 0.7, icones: ['trabalho', 'coracao_partido', 'abraco'], numero: '', pensamento: 'Poxa... queria te dar um abraço.', afeto: 0.03, lembrar: 'Will teve um dia ruim no trabalho', importancia: 6 }),
-      ...ex('Você é muito fofo', { gesto: 'timido', emocao: 'timido', intensidade: 0.8, icones: ['coracao'], numero: '', pensamento: 'Ai, para... (adorei).', afeto: 0.03, lembrar: '', importancia: 3 }),
-      ...ex('Bora jogar o jogo da melodia?', { gesto: 'pulinhos', emocao: 'empolgado', intensidade: 0.9, icones: ['musica', 'jogo'], numero: '', pensamento: 'Eba! Presta atenção nas notas.', afeto: 0.02, lembrar: '', importancia: 2, acao: 'jogo_melodia' }),
       ...ex('O que você imaginou hoje?', { gesto: 'pulinhos', emocao: 'empolgado', intensidade: 0.7, icones: ['ideia', 'livro'], numero: '', pensamento: 'Imaginei uma coisa! Olha só.', afeto: 0.01, lembrar: '', importancia: 1, acao: 'contar_historia' }),
       ...ex('Que barulho foi esse que te assustou?', { gesto: 'nao_sei', emocao: 'medo', intensidade: 0.6, icones: ['olhos', 'pergunta'], numero: '', pensamento: 'Esse aqui, ó… você sabe o que é?', afeto: 0, lembrar: '', importancia: 2, acao: 'repetir_som', espera_resposta: true }),
     ].map((m) => ({ ...m, content: m.content.replaceAll('Will', cfg.dono) }))
@@ -1619,7 +1620,7 @@ function contextoTexto(ctx) {
   if (!ctx) return ''
   if (ctx.tipo === 'confirmou') return `CONTEXTO: antes, ${d} disse "${ctx.original}"; você ficou na dúvida se era com você, e ${d} confirmou que era. Responda à frase original.`
   if (ctx.tipo === 'continuou') return `CONTEXTO: antes, ${d} disse "${ctx.original}" para chamar sua atenção e agora continuou falando com você.`
-  if (ctx.tipo === 'som') { const s = sons.find((o) => o.id === ctx.somId); return `CONTEXTO: você acabou de tocar um barulho gravado que sempre te assusta (já assustou ${s?.vezes || 'várias'} vezes) e perguntou a ${d} o que é. Se ${d} explicar, preencha "som_significado" com uma descrição curta (ex.: "a porta do quarto batendo") e escolha ícones que lembrem o som; você fica aliviado. Se não explicar, deixe "som_significado" vazio.` }
+  if (ctx.tipo === 'som') { const s = sons.find((o) => o.id === ctx.somId); return `CONTEXTO: você acabou de tocar um barulho gravado que sempre te assusta (já assustou ${s?.vezes || 'várias'} vezes) e perguntou a ${d} o que é. Qualquer explicação conta: preencha "som_significado" com uma descrição curta (ex.: "a porta do quarto batendo", "um barulho que ${d} fez de brincadeira") e escolha ícones que lembrem o som; você fica aliviado. Se ${d} só disser para não ter medo, use "um barulho sem perigo". Se não falar nada do som, deixe vazio.` }
   if (ctx.tipo === 'deco') return `CONTEXTO: você acabou de decorar a borda da tela para ${ctx.nome} com: ${ctx.elementos.join(', ')}, e perguntou se ${d} gostou. Preencha "opiniao_deco" ("gostou" ou "nao_gostou") se der para saber, e "sugestao" se ${d} der uma ideia.`
   if (ctx.tipo === 'pesadelo') return `CONTEXTO: você acabou de acordar assustado de um pesadelo${ctx.hist ? `: ${ctx.hist.resumo}` : ''}. Se ${d} te consolar, você se acalma.`
   return ''
@@ -2697,9 +2698,11 @@ let wake = null
 async function manterTela() { try { wake = await navigator.wakeLock?.request('screen') } catch {} }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && actx) manterTela() })
 
-$('#btnStart').onclick = async () => {
+async function acordarRobo(automatico = false) {
+  if (micStream) return
   try {
     actx = new (window.AudioContext || window.webkitAudioContext)()
+    if (automatico) { await actx.resume().catch(() => {}); if (actx.state !== 'running') { actx.close(); actx = null; return } }
     micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } })
     await ligarOuvido(micStream)
     $('#start').hidden = true
@@ -2713,8 +2716,32 @@ $('#btnStart').onclick = async () => {
     foco = { expr: 'surpreso', ate: now() + 900 }
     if (!cfg.key) pushLog('Dica: ⚙️ → chave do Groq para conversar pelo 🎤')
     else if (cfg.maosLivres) pushLog(`Dica: é só chamar "${cfg.nome}" e falar`)
+    if (automatico) pushLog('Acordou sozinho (microfone já liberado)')
   } catch (e) {
-    $('#start').querySelector('p').textContent = 'Não consegui usar o microfone: ' + e.message + '. Libere o microfone para este site e tente de novo.'
+    micStream = null
+    if (!automatico) $('#start').querySelector('p').textContent = 'Não consegui usar o microfone: ' + e.message + '. Libere o microfone para este site e tente de novo.'
   }
 }
+$('#btnStart').onclick = () => acordarRobo()
+// Se o microfone já foi liberado antes, tenta acordar sem precisar tocar no botão.
+navigator.permissions?.query({ name: 'microphone' }).then((st) => { if (st.state === 'granted') acordarRobo(true) }).catch(() => {})
+
+// Atualização: confere de tempos em tempos se há versão nova no site. Se a tela estiver fora de
+// vista, recarrega na hora; se estiver aberta, mostra o botão ⬆ (ou recarrega quando você sair).
+const NUM_VERSAO = VERSAO.split(' ')[0]
+let versaoNova = ''
+async function conferirVersao() {
+  try {
+    const v = (await (await fetch('versao.txt?t=' + Date.now(), { cache: 'no-store' })).text()).trim()
+    if (!/^v\d+$/.test(v) || v === NUM_VERSAO) return
+    if (versaoNova !== v) { versaoNova = v; pushLog(`Versão nova no site: ${v} (esta é ${NUM_VERSAO})`); $('#btnAtualizar').hidden = false }
+    if (document.visibilityState === 'hidden') atualizar()
+  } catch {}
+}
+function atualizar() {
+  enviarLog('atualizando').finally(() => location.replace(location.pathname + '?v=' + (versaoNova || Date.now()) + location.hash))
+}
+setInterval(conferirVersao, 3 * 60000); setTimeout(conferirVersao, 8000)
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden' && versaoNova) atualizar(); else if (document.visibilityState === 'visible') conferirVersao() })
+$('#btnAtualizar').onclick = () => atualizar()
 requestAnimationFrame(quadro)
