@@ -17,7 +17,7 @@ const store = {
 }
 
 // ---------------------------------------------------------------- barramento
-const VERSAO = 'v14 · 08/11'
+const VERSAO = 'v15 · 08/11'
 const logLines = []
 const filaLog = [] // tudo o que aconteceu desde o último envio para o log remoto
 function pushLog(s) {
@@ -245,7 +245,7 @@ function tickCerebro(dt) {
   if (!dormindo && parado > 120 && (N.energia < 0.15 || (ehNoite() && parado > 300)) ) dormir(ehNoite() ? 'é de noite' : 'sem energia')
   else if (!dormindo && parado > 1200 && !pessoa.presente) dormir('cochilo')
   else if (!dormindo && luz.escuro && now() - luz.desde > 60000 && parado > 60 && !jogo) dormir('está escuro')
-  if (dormindo && !ehNoite() && !luz.escuro && parado > 60 && ((N.energia > 0.8 && horaDoDia() < 12) || N.energia > 0.95)) { acordar(); setTimeout(() => { iniciarGesto('espreguicar'); somGesto('espreguicar') }, 1300) }
+  if (dormindo && !sonoIA && !ehNoite() && !luz.escuro && parado > 60 && ((N.energia > 0.8 && horaDoDia() < 12) || N.energia > 0.95)) { acordar(); setTimeout(() => { iniciarGesto('espreguicar'); somGesto('espreguicar') }, 1300) }
   if (foco && now() > foco.ate) foco = null
   if (icone && now() > icone.ate) icone = null
 }
@@ -269,7 +269,7 @@ const COMPORTAMENTOS = {
   },
   devanear: { // sozinho ou entediado: imagina uma historinha
     cd: 15 * 60000,
-    nota: () => (cfg.key && (!temGente() || N.estimulo < 0.35) && papo.estado === 'parado' ? 0.62 + P.curiosidade * 0.3 : 0),
+    nota: () => (cfg.key && nivelIA === 'ok' && (!temGente() || N.estimulo < 0.35) && papo.estado === 'parado' ? 0.62 + P.curiosidade * 0.3 : 0),
     fazer: () => devanear(),
   },
   decorar: { // perto de uma data comemorativa, decora a tela por conta própria
@@ -1475,7 +1475,74 @@ function esfriar(modelo, msg) {
   else if (rd) seg = +rd[1]
   if (/per ?day|PerDay|TPD|RPD/i.test(msg)) seg = Math.max(seg, modelo.startsWith('gemini:') ? 3 * 3600 : 600)
   esfriando[modelo] = Date.now() + seg * 1000 + 500
+  if (/per ?day|PerDay|TPD|RPD/i.test(msg)) esfriandoDia[modelo] = esfriando[modelo]
   return { seg, dia: /per ?day|PerDay|TPD|RPD/i.test(msg) }
+}
+
+// ---------------------------------------------------------------- fôlego da IA (sono de verdade)
+// Quanto ainda resta de "cabeça" no dia: soma o que sobra de cada modelo (o principal pesa mais).
+// Com pouco fôlego ele fica sonolento e economiza; sem nenhum, avisa e dorme até recarregar.
+const esfriandoDia = {}
+const PESO_IA = [[/gpt-oss-120b|kimi-k2/, 1], [/llama-3\.3-70b/, 0.7], [/gpt-oss-20b/, 0.6], [/flash.*lite/, 0.5], [/gemini.*flash/, 0.3], [/qwen3|llama-3\.1-8b/, 0.4]]
+const pesoIA = (m) => (PESO_IA.find(([re]) => re.test(m)) || [0, 0.3])[1]
+let nivelIA = 'ok', sonoIA = false, sonoIADesde = 0, ultimoBocejoIA = 0
+function folegoIA() {
+  if (!cfg.key || (!modelosGroq.length && !modelosGemini.length)) return 1
+  const g = (re) => modelosGroq.find((i) => re.test(i)), gem = (re) => (cfg.geminiKey ? modelosGemini.find((i) => re.test(i)) : null)
+  const todos = [...new Set([g(/gpt-oss-120b/), g(/kimi-k2/), g(/llama-3\.3-70b/), gem(/flash(?!.*lite)/), g(/gpt-oss-20b/), gem(/flash.*lite/), g(/qwen3/), g(/llama-3\.1-8b/)].filter(Boolean))]
+  let cap = 0, max = 0
+  for (const m of todos) {
+    const peso = pesoIA(m); max += peso
+    if (esfriandoDia[m] > Date.now()) continue
+    cap += peso * (COTA_DIA[m] ? clamp(1 - usado(m) / COTA_DIA[m], 0, 1) : 1)
+  }
+  return max ? cap / max : 1
+}
+function voltaDaIA() { // quando o primeiro modelo volta (para mostrar no balão)
+  const t = Math.min(...Object.values(esfriandoDia).filter((x) => x > Date.now()), Infinity)
+  if (!isFinite(t)) return ''
+  const min = Math.ceil((t - Date.now()) / 60000)
+  return min >= 60 ? `${Math.floor(min / 60)}h${String(min % 60).padStart(2, '0')}` : `${min}min`
+}
+function tickFolego() {
+  if (!actx) return
+  const f = folegoIA(), antes = nivelIA
+  nivelIA = f <= 0.02 ? 'sem' : f < 0.25 ? 'exausto' : f < 0.5 ? 'cansado' : 'ok'
+  if (sonoIA) {
+    if (f > 0.25) { // recarregou
+      sonoIA = false; pushLog(`IA→ recarregou (fôlego ${Math.round(f * 100)}%)`)
+      acordar(); setTimeout(() => { iniciarGesto('espreguicar'); somGesto('espreguicar'); evento({ label: 'recarreguei a cabeça!', P: 0.4, A: 0.4, interesse: 0.8, expr: 'empolgado', icones: ['bateria', 'ok'], dur: 3000, emote: Math.random() < 0.4 ? 'estrela' : null }) }, 1300)
+    } else if (!dormindo && now() - sonoIADesde > 6000 && now() - ultimoEvento > 20000 && papo.estado !== 'conversando' && !gravando && !jogo) { sono.touca = true; dormir('cabeça cansada (voltou a dormir)') }
+    return
+  }
+  if (nivelIA !== antes) pushLog(`IA→ fôlego ${Math.round(f * 100)}% (${nivelIA})`)
+  if (nivelIA === 'sem') return dormirPorCansaco()
+  if (antes === 'ok' && nivelIA === 'cansado') evento({ label: 'minha cabeça tá ficando cansada', P: -0.05, A: -0.3, interesse: 0.4, expr: 'sono', gesto: 'bocejo', forcarGesto: true, icones: ['bateria', 'seta_baixo'], som: 'sono', dur: 3000 })
+  // bocejos de vez em quando: mais frequentes quanto menos fôlego
+  if ((nivelIA === 'cansado' || nivelIA === 'exausto') && !dormindo && !gesto && !palco && !gravando && now() - ultimoBocejoIA > (nivelIA === 'exausto' ? 45000 : 120000)) {
+    ultimoBocejoIA = now(); iniciarGesto('bocejo'); somDe('sono', 0.25); olhoSonolentoAte = now() + 1800
+  }
+}
+function dormirPorCansaco() {
+  if (sonoIA) return
+  sonoIA = true; sonoIADesde = now()
+  const volta = voltaDaIA()
+  pushLog(`IA→ sem fôlego: vai dormir até recarregar${volta ? ` (volta em ~${volta})` : ''}`)
+  pararImaginacao()
+  evento({ label: 'cansei, vou dormir até a cabeça recarregar', P: -0.05, A: -0.5, interesse: 0.6, expr: 'sono', gesto: 'bocejo', forcarGesto: true, icones: ['dormir', 'ampulheta'], numero: volta, som: 'sono', dur: 4000 })
+  legenda(`${cfg.nome}: Tô sem energia na cabeça… vou dormir e volto${volta ? ` em uns ${volta}` : ' mais tarde'}.`)
+  setTimeout(() => { sono.touca = true; dormir('cabeça cansada'); sono.proxREM = Infinity }, 4500)
+}
+// Dormindo de cansaço: abre um olho, mostra quanto falta e volta a dormir. Coisas simples ele ainda responde.
+function respostaSonolenta(text) {
+  pushLog(`Você: ${text}`); legenda(`Você: ${text}`)
+  const loc = respostaLocal(text), volta = voltaDaIA()
+  olhoSonolentoAte = now() + 3500
+  balao = { itens: loc?.icones?.length ? loc.icones : ['dormir', 'ampulheta'], numero: loc ? String(loc.numero || '').replace(/\{(hora|data|temp|umid)\}/, (_, x) => ({ hora: new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }), data: new Date().toLocaleDateString('pt-BR', { day: 'numeric', month: 'numeric' }), temp: clima.temp + '°', umid: clima.umid + '%' }[x])) : volta, t0: now(), ate: now() + 4000 }
+  somDe('sono', 0.3)
+  pushLog(`${cfg.nome}: ${loc ? loc.pensamento + ' (sonolento)' : `zzz… tô recarregando${volta ? ', volto em ' + volta : ''}`}`)
+  legenda(`${cfg.nome}: ${loc ? loc.pensamento : `zzz… tô recarregando${volta ? ', volto em ' + volta : ''}`}`)
+  if (loc?.acao === 'cantar') setTimeout(cantarMusica, 1500)
 }
 async function pedirGroqModelo(modelo, messages, nome, esquema, extra) {
   const gpt = /gpt-oss/i.test(modelo)
@@ -1637,6 +1704,7 @@ function respostaLocal(texto) {
 }
 
 async function responder(text, vh, contexto) {
+  if (sonoIA) return respostaSonolenta(text)
   abrirConversa()
   const ctx = contexto || papo.contexto; papo.contexto = null
   pushLog(`Você: ${text}`)
@@ -1680,7 +1748,7 @@ ELEMENTOS de decoração: ${ELEMENTOS.join(', ')}. CORES: ${Object.entries(NOME_
     // tokens não contam no limite. O que muda a cada fala vem por último.
     const loc = !ctx && respostaLocal(text)
     const r = loc ? { choices: [{ message: { content: JSON.stringify(loc) } }], modelo: 'local', usage: { total_tokens: 0 } }
-      : await pedirReacao([{ role: 'system', content: sys }, ...exemplosFixos(), ...hist.slice(0, -1), { role: 'system', content: situacao }, hist[hist.length - 1]])
+      : await pedirJSON([{ role: 'system', content: sys }, ...exemplosFixos(), ...hist.slice(0, -1), { role: 'system', content: situacao + (nivelIA === 'exausto' ? '\nVocê está MUITO sonolento (sua cabeça está quase sem energia): responda bem curtinho, com sono, e pode bocejar.' : nivelIA === 'cansado' ? '\nVocê está meio sonolento hoje.' : '') }, hist[hist.length - 1]], 'reacao', ESQUEMA(), {}, nivelIA === 'exausto' ? 'fundo' : 'conversa')
     const bruto = r.choices[0].message.content
     if (r.modelo === 'local') anotarUso('local', 1)
     pushLog(`IA (${curto(r.modelo || cfg.model)} · ${r.usage?.total_tokens ?? '?'} tokens${r.usage?.prompt_tokens_details?.cached_tokens ? `, ${r.usage.prompt_tokens_details.cached_tokens} do cache` : ''}): ${bruto.slice(0, 300)}`)
@@ -1765,7 +1833,7 @@ function legenda(txt) {
 // pensa sobre elas, escreve no diário e a personalidade muda um pouquinho.
 let refletindo = false
 async function refletir(forcar = false) {
-  if (!cfg.key || refletindo) return
+  if (!cfg.key || refletindo || (!forcar && folegoIA() < 0.5)) return
   const diaPassou = Date.now() - (P.ultimaReflexao || 0) > 20 * 3600000
   if (!forcar && !(impDesdeReflexao >= 40 || (diaPassou && memorias.length >= 5))) return
   refletindo = true
@@ -2290,7 +2358,7 @@ async function imaginar(tipo) {
   if (!cfg.key) return null
   const dia = new Date().toLocaleDateString('sv')
   if (imagHoje.dia !== dia) imagHoje = { dia, n: 0 }
-  if (imagHoje.n >= 14) return null
+  if (imagHoje.n >= 14 || (folegoIA() < 0.5 && tipo !== 'forcado')) return null
   imagHoje.n++; store.set('imagHoje', imagHoje)
   const tom = tipo === 'pesadelo' ? 'um PESADELO de robô: assustador mas bobinho (ex.: ficar sem bateria, um aspirador gigante, perder o Wi-Fi, um barulho no escuro). Nunca violento ou cruel.'
     : tipo === 'sonho' ? 'um SONHO: uma mistura estranha e criativa das coisas que aconteceram hoje, como os sonhos de verdade.'
@@ -2624,8 +2692,10 @@ function acertouTocaAqui() {
 }
 
 // Tudo o que roda a cada segundo, acordado ou dormindo.
+let proxFolego = 0
 function tickVida() {
   tickPapo(); tickClima(); tickSono(); tickTocaAqui()
+  if (now() > proxFolego) { proxFolego = now() + 20000; tickFolego() }
   if (perguntaSomPendente && temGente() && !dormindo && !papo.contexto) { const s = sons.find((o) => o.id === perguntaSomPendente); if (s) perguntarSom(s); else perguntaSomPendente = null }
   if (P.deco?.perguntar && temGente() && !dormindo && !papo.contexto && papo.estado !== 'conversando') perguntarDeco()
 }
@@ -2718,6 +2788,12 @@ $('#tSonhar').onclick = () => { if (!dormindo) dormir('teste'); sono.remDur = 40
 $('#tPesadelo').onclick = () => { if (!dormindo) dormir('teste'); sono.remDur = 40000; comecarREM('pesadelo') }
 $('#tBoaNoite').onclick = () => ritualBoaNoite()
 $('#tTocaAqui').onclick = () => comecarTocaAqui()
+// Teste: finge que todos os modelos acabaram por 3 min (ou desfaz, se já estiver dormindo de cansaço).
+$('#tCansar').onclick = () => {
+  if (sonoIA) { for (const k of Object.keys(esfriandoDia)) { delete esfriandoDia[k]; delete esfriando[k] } pushLog('Teste: IA liberada'); proxFolego = 0; return }
+  for (const m of [...modelosGroq, ...modelosGemini]) { esfriando[m] = esfriandoDia[m] = Date.now() + 180000 }
+  pushLog('Teste: todos os modelos esgotados por 3 min'); proxFolego = 0
+}
 const selEm = $('#tEmote'); Object.keys(EMOTES).forEach((k) => selEm.add(new Option(k, k)))
 $('#tMostrarEmote').onclick = () => { palco = null; if (dormindo) acordar(); mostrarEmote(selEm.value) }
 $('#tDecorar').onclick = () => decorar(true)
@@ -2785,6 +2861,7 @@ Data         : ${(() => { const d = dataAtiva(); return d ? `${d.nome} (${d.dias
 Vestindo     : ${Object.keys(vestido).join(', ') || '—'} · frio ${nivelFrio(clima.temp)} · calor ${nivelCalor(clima.temp)}
 Mãos livres  : ${!cfg.maosLivres ? 'desligado' : !cfg.key ? 'precisa da chave' : vad.verificando ? 'conferindo se era com ele…' : vad.ativo ? 'ouvindo uma frase' : 'esperando o nome'} · ${vad.hora.length}/40 na hora${jogo ? `
 Jogo         : ${jogo.fase} · ${jogo.seq.length} notas` : ''}` + `
+Fôlego da IA : ${Math.round(folegoIA() * 100)}% (${sonoIA ? 'dormindo para recarregar' + (voltaDaIA() ? ', volta em ~' + voltaDaIA() : '') : nivelIA})
 IA hoje      : ${Object.entries(uso.dia === hojeSv() ? uso.t : {}).map(([m, n]) => `${curto(m)} ${m === 'local' ? n : COTA_DIA[m] ? Math.round(n / 1000) + 'k/' + COTA_DIA[m] / 1000 + 'k' : n}`).join(' · ') || '—'}${Object.keys(esfriando).filter((m) => esfriando[m] > Date.now()).map((m) => ` · ${curto(m)} esfriando`).join('')}
 Log remoto   : ${!tokenLogValido(cfg.logToken) ? 'sem token' : logEnvio.erro ? 'erro: ' + logEnvio.erro : logEnvio.ultimo ? `enviado há ${Math.round((Date.now() - logEnvio.ultimo) / 60000)} min` : 'ainda não enviou'} · ${filaLog.length} linha(s) na fila`
 }
