@@ -128,6 +128,8 @@
   <label class="check"><input id="cLegenda" type="checkbox"> Legendas: mostrar o que ele entendeu e o que quis dizer</label>
   <label class="check"><input id="cMaos" type="checkbox"> Mãos livres: chamar pelo nome, sem apertar o 🎤</label>
   <p class="hint">Com mãos livres, toda frase falada perto dele vai para a transcrição do Groq (até 40 por hora) para ele saber se chamaram o nome. O que não for com ele é descartado.</p>
+  <label>Chave do Gemini (reforço, opcional, fica só neste celular)</label><input id="cGemini" type="password" autocomplete="off" placeholder="AIza…">
+  <p class="hint">Grátis em aistudio.google.com → Get API key. Entra quando os modelos do Groq estão no limite. Só vai texto, nunca imagem.</p>
   <label>Token do GitHub para enviar o log (fica só neste celular)</label><input id="cLogToken" type="password" autocomplete="off" placeholder="github_pat_…">
   <p class="hint">Com ele, o robô manda o log para o repositório privado userm4c/robo-logs a cada 5 min (e na hora, se der erro), para o Claude analisar.</p>
   <div class="row">
@@ -141,6 +143,6 @@
 </div>
 
 <video id="cam" playsinline muted hidden></video>
-<script type="module" src="robo.js?v=13"></script>
+<script type="module" src="robo.js?v=14"></script>
 </body>
 </html>

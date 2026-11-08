@@ -17,7 +17,7 @@ const store = {
 }
 
 // ---------------------------------------------------------------- barramento
-const VERSAO = 'v13 · 08/11'
+const VERSAO = 'v14 · 08/11'
 const logLines = []
 const filaLog = [] // tudo o que aconteceu desde o último envio para o log remoto
 function pushLog(s) {
@@ -64,6 +64,9 @@ let chaveReserva = ''
 { const m = location.hash.match(/log=((?:github_pat_|ghp_)[A-Za-z0-9_]+)/); if (m && m[1] !== cfg.logToken) { cfg.logToken = m[1]; store.set('cfg', cfg); store.set('logToken', m[1]) } }
 if (!cfg.logToken && store.get('logToken', '')) cfg.logToken = store.get('logToken', '')
 cfg.logRepo ||= 'userm4c/robo-logs'
+const chaveGeminiValida = (k) => /^AIza[\w-]{30,}$/.test((k || '').trim())
+{ const m = location.hash.match(/gem=(AIza[\w-]+)/); if (m && m[1] !== cfg.geminiKey) { cfg.geminiKey = m[1]; store.set('cfg', cfg); store.set('geminiKey', m[1]) } }
+if (!cfg.geminiKey && store.get('geminiKey', '')) cfg.geminiKey = store.get('geminiKey', '')
 let dadosProtegidos = null
 navigator.storage?.persisted?.().then((v) => (dadosProtegidos = v)).catch(() => {})
 // Se os dados do site sumiram, tenta pegar a chave do gerenciador de senhas do Chrome.
@@ -1444,38 +1447,87 @@ const ESQUEMA = () => ({
   },
 })
 const formatoOk = {} // por modelo e pedido: qual formato o Groq aceitou
-// Limite do plano gratuito (tokens por minuto, por modelo): quando estoura, aquele modelo "esfria"
-// pelo tempo que o Groq pedir e a conversa continua em outro modelo bom.
+// Motores de IA: vários modelos do Groq (cada um com a sua cota) e o Gemini como reforço.
+// Conversa usa os melhores primeiro; devaneios, sonhos e reflexões usam os de reserva, para
+// sobrar cota do modelo principal para você. Quem estoura o limite "esfria" pelo tempo pedido.
 const esfriando = {}
-function modeloLivre(atual) {
-  const lista = MODELOS_BONS.map((re) => modelosGroq.find((i) => re.test(i))).filter(Boolean)
-  if (!(esfriando[atual] > Date.now())) return atual
-  return lista.find((m) => !(esfriando[m] > Date.now())) || atual
+function modeloLivre(atual) { return motores('conversa')[0] || atual }
+const COTA_DIA = { 'openai/gpt-oss-120b': 200000, 'openai/gpt-oss-20b': 200000, 'llama-3.3-70b-versatile': 100000, 'llama-3.1-8b-instant': 500000 }
+let uso = store.get('usoIA', { dia: '', t: {} })
+const hojeSv = () => new Date().toLocaleDateString('sv')
+function anotarUso(modelo, tokens) { if (uso.dia !== hojeSv()) uso = { dia: hojeSv(), t: {} }; uso.t[modelo] = (uso.t[modelo] || 0) + (tokens || 1); store.set('usoIA', uso) }
+const usado = (m) => (uso.dia === hojeSv() ? uso.t[m] || 0 : 0)
+const curto = (m) => m.replace(/^gemini:/, '✦').split('/').pop()
+let modelosGemini = []
+function motores(tarefa) {
+  const g = (re) => modelosGroq.find((i) => re.test(i))
+  const gem = (re) => (cfg.geminiKey ? modelosGemini.find((i) => re.test(i)) : null)
+  const lista = tarefa === 'conversa'
+    ? [g(/gpt-oss-120b/), g(/kimi-k2/), g(/llama-3\.3-70b/), gem(/flash(?!.*lite)/), g(/gpt-oss-20b/), gem(/flash.*lite/), g(/qwen3/), g(/llama-3\.1-8b/)]
+    : [g(/gpt-oss-20b/), gem(/flash.*lite/), g(/qwen3/), g(/llama-3\.1-8b/), usado('openai/gpt-oss-120b') < 120000 ? g(/gpt-oss-120b/) : null]
+  const livres = [...new Set(lista.filter(Boolean))].filter((m) => !(esfriando[m] > Date.now()) && !(COTA_DIA[m] && usado(m) > COTA_DIA[m] * 0.97))
+  return livres.length ? livres : modelosGroq.length || modelosGemini.length ? [] : [cfg.model]
 }
-async function pedirJSON(messages, nome, esquema, extra = {}) {
-  let modelo = modeloLivre(cfg.model), erro
-  for (let tentativa = 0; tentativa < 4; tentativa++) {
-    const gpt = /gpt-oss/i.test(modelo)
-    const base = { model: modelo, temperature: 0.5, max_completion_tokens: 1400, messages, ...extra, ...(gpt ? { reasoning_effort: 'low' } : {}) }
-    const formatos = [{ type: 'json_schema', json_schema: { name: nome, strict: gpt, schema: esquema } }, { type: 'json_object' }, null]
-    const chave = modelo + nome
+function esfriar(modelo, msg) {
+  let seg = 60
+  const m = /try again in (?:(\d+)h)?(?:(\d+)m)?([\d.]+)s/i.exec(msg), rd = /"retryDelay":\s*"(\d+)s"/.exec(msg)
+  if (m) seg = (+m[1] || 0) * 3600 + (+m[2] || 0) * 60 + +m[3]
+  else if (rd) seg = +rd[1]
+  if (/per ?day|PerDay|TPD|RPD/i.test(msg)) seg = Math.max(seg, modelo.startsWith('gemini:') ? 3 * 3600 : 600)
+  esfriando[modelo] = Date.now() + seg * 1000 + 500
+  return { seg, dia: /per ?day|PerDay|TPD|RPD/i.test(msg) }
+}
+async function pedirGroqModelo(modelo, messages, nome, esquema, extra) {
+  const gpt = /gpt-oss/i.test(modelo)
+  const base = { model: modelo, temperature: 0.5, max_completion_tokens: 1400, messages, ...extra, ...(gpt ? { reasoning_effort: 'low' } : {}), ...(/qwen/i.test(modelo) ? { reasoning_format: 'hidden' } : {}) }
+  const formatos = esquema ? [{ type: 'json_schema', json_schema: { name: nome, strict: gpt, schema: esquema } }, { type: 'json_object' }, null] : [{ type: 'json_object' }, null]
+  const chave = modelo + nome
+  let erro
+  for (let i = formatoOk[chave] ?? 0; i < formatos.length; i++) {
     try {
-      for (let i = formatoOk[chave] ?? 0; i < formatos.length; i++) {
-        try {
-          const r = await groq('/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(formatos[i] ? { ...base, response_format: formatos[i] } : base) })
-          formatoOk[chave] = i; r.modelo = modelo
-          return r
-        } catch (e) { erro = e; if (!/Groq 400/.test(e.message) || i === formatos.length - 1) throw e; pushLog(`Groq: formato ${formatos[i]?.type} recusado por ${modelo.split('/').pop()}: ${e.message.slice(0, 260)}`) }
-      }
+      const r = await groq('/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(formatos[i] ? { ...base, response_format: formatos[i] } : base) })
+      formatoOk[chave] = i
+      return r
     } catch (e) {
       erro = e
-      if (!/Groq 429/.test(e.message)) throw e
-      const m = /try again in (?:(\d+)h)?(?:(\d+)m)?([\d.]+)s/i.exec(e.message), seg = m ? (+m[1] || 0) * 3600 + (+m[2] || 0) * 60 + +m[3] : 60, tipoLim = /per day|TPD|RPD/i.test(e.message) ? 'do dia' : 'por minuto'
-      esfriando[modelo] = Date.now() + seg * 1000 + 500
-      const outro = modeloLivre(modelo)
-      if (outro !== modelo) { pushLog(`Groq: limite ${tipoLim} do ${modelo.split('/').pop()} (volta em ${Math.ceil(seg)} s); usando ${outro.split('/').pop()}`); modelo = outro; continue }
-      if (seg <= 12) { pushLog(`Groq: limite por minuto; esperando ${Math.ceil(seg)} s`); await new Promise((ok) => setTimeout(ok, seg * 1000 + 300)); continue }
-      throw e
+      if (!/Groq 400/.test(e.message) || i === formatos.length - 1) throw e
+      pushLog(`IA: formato ${formatos[i]?.type} recusado por ${curto(modelo)}: ${e.message.slice(0, 260)}`)
+    }
+  }
+  throw erro
+}
+async function pedirGemini(modelo, messages, extra) {
+  const sys = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n')
+  const contents = []
+  for (const m of messages.filter((x) => x.role !== 'system')) {
+    const role = m.role === 'assistant' ? 'model' : 'user', ult = contents[contents.length - 1]
+    if (ult && ult.role === role) ult.parts[0].text += '\n' + m.content; else contents.push({ role, parts: [{ text: m.content }] })
+  }
+  if (!contents.length || contents[0].role !== 'user') contents.unshift({ role: 'user', parts: [{ text: '(começo da conversa)' }] })
+  const corpo = { systemInstruction: { parts: [{ text: sys }] }, contents, generationConfig: { responseMimeType: 'application/json', temperature: extra.temperature ?? 0.6, maxOutputTokens: 2048 } }
+  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent?key=${encodeURIComponent(cfg.geminiKey)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(corpo) })
+  if (!r.ok) throw new Error(`Gemini ${r.status}: ${(await r.text()).replace(/\s+/g, ' ').slice(0, 420)}`)
+  const j = await r.json()
+  const txt = (j.candidates?.[0]?.content?.parts || []).map((x) => x.text || '').join('')
+  if (!txt) throw new Error(`Gemini: resposta vazia (${j.candidates?.[0]?.finishReason || j.promptFeedback?.blockReason || '?'})`)
+  return { choices: [{ message: { content: txt } }], usage: { total_tokens: j.usageMetadata?.totalTokenCount, cache: j.usageMetadata?.cachedContentTokenCount } }
+}
+async function pedirJSON(messages, nome, esquema, extra = {}, tarefa = 'conversa') {
+  const fila = motores(tarefa)
+  if (!fila.length) throw new Error('IA 429: todos os modelos estão no limite agora')
+  let erro
+  for (let k = 0; k < fila.length; k++) {
+    const modelo = fila[k]
+    try {
+      const r = modelo.startsWith('gemini:') ? await pedirGemini(modelo.slice(7), messages, extra) : await pedirGroqModelo(modelo, messages, nome, esquema, extra)
+      r.modelo = modelo; anotarUso(modelo, r.usage?.total_tokens)
+      return r
+    } catch (e) {
+      erro = e
+      if (/ 401/.test(e.message)) throw e
+      const lim = / 429| 503|RESOURCE_EXHAUSTED|quota/i.test(e.message)
+      if (lim) { const { seg, dia } = esfriar(modelo, e.message); pushLog(`IA: limite ${dia ? 'do dia' : 'por minuto'} do ${curto(modelo)} (volta em ${seg > 3600 ? Math.round(seg / 3600) + ' h' : Math.ceil(seg) + ' s'})${fila[k + 1] ? '; usando ' + curto(fila[k + 1]) : ''}`) }
+      else pushLog(`IA: ${curto(modelo)} falhou (${e.message.slice(0, 160)})${fila[k + 1] ? '; usando ' + curto(fila[k + 1]) : ''}`)
     }
   }
   throw erro
@@ -1484,12 +1536,24 @@ const pedirReacao = (messages) => pedirJSON(messages, 'reacao', ESQUEMA())
 // Só modelos grandes, bons em português e que obedecem o formato.
 const MODELOS_BONS = [/gpt-oss-120b/i, /kimi-k2/i, /llama-4-maverick/i, /llama-3\.3-70b/i, /gpt-oss-20b/i]
 const modeloBom = (id) => MODELOS_BONS.some((re) => re.test(id))
+async function conferirGemini() {
+  try {
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=${encodeURIComponent(cfg.geminiKey)}`)
+    if (!r.ok) throw new Error(`Gemini ${r.status}: ${(await r.text()).slice(0, 160)}`)
+    const { models = [] } = await r.json()
+    const versao = (n) => +((/(\d+(?:\.\d+)?)/.exec(n) || [0, 0])[1])
+    modelosGemini = models.filter((m) => (m.supportedGenerationMethods || []).includes('generateContent') && /flash/i.test(m.name) && !/image|tts|audio|live|embed|thinking|exp|preview/i.test(m.name))
+      .map((m) => 'gemini:' + m.name.replace(/^models\//, '')).sort((a, b) => versao(b) - versao(a))
+    pushLog(`Gemini disponível: ${modelosGemini.map(curto).slice(0, 4).join(', ') || 'nenhum modelo flash'}`)
+  } catch (e) { pushLog('Gemini: ' + e.message) }
+}
 async function conferirModelo() {
   if (!cfg.key) return
   try {
     const { data } = await groq('/models')
     const ids = data.map((m) => m.id)
     modelosGroq = ids
+    if (cfg.geminiKey) conferirGemini()
     pushLog(`Modelos bons disponíveis: ${MODELOS_BONS.map((re) => ids.find((i) => re.test(i))).filter(Boolean).join(', ') || 'nenhum'}`)
     if (ids.includes(cfg.model) && modeloBom(cfg.model)) return pushLog(`Modelo de conversa: ${cfg.model}`)
     const melhor = MODELOS_BONS.map((re) => ids.find((i) => re.test(i))).find(Boolean)
@@ -1508,22 +1572,11 @@ function percepcao(vh) {
   if (luz.escuro) out.push('O quarto está escuro.')
   return out.join(' ')
 }
-async function responder(text, vh, contexto) {
-  abrirConversa()
-  const ctx = contexto || papo.contexto; papo.contexto = null
-  pushLog(`Você: ${text}`)
-  legenda(`Você: ${text}`)
-  foco = { expr: 'pensando', ate: now() + 15000 }; icone = { tipo: 'reticencias', ate: now() + 15000 }
-  conversaAte = now() + 20000
-  try {
-    const traços = `extroversão ${P.extroversao.toFixed(2)}, curiosidade ${P.curiosidade.toFixed(2)}, energia ${P.energia.toFixed(2)}, sensibilidade ${P.sensibilidade.toFixed(2)}, afeto por ${cfg.dono} ${P.afeto.toFixed(2)}`
-    const gostos = Object.entries(P.gostos).map(([k, v]) => `${k} ${v.toFixed(2)}`).join(', ')
-    const sobreDeco = ctx?.tipo === 'deco' || /decor|enfeit|natal|ano.?novo|carnaval|p[áa]scoa|junina|halloween|namorad|crian[çc]as|festa|luzinha|pisca/i.test(text)
-    const sobreAniv = /anivers|nasci/i.test(text)
-    const recentes = lembrancas(6).map((m) => `- ${m.tipo === 'reflexao' ? '(reflexão) ' : ''}${m.txt}`).join('\n') || '- nada marcante ainda'
-    const agora = new Date()
-    const quando = agora.toLocaleString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })
-    const sys = `Você é ${cfg.nome}, um robozinho de mesa com personalidade própria, que mora na mesa de ${cfg.dono}.
+// Prompt fixo: só muda se o nome do robô ou do dono mudar, então o Groq consegue reaproveitar.
+let _fixo = { chave: '', txt: '', ex: null }
+function promptFixo() {
+  const chave = cfg.nome + '|' + cfg.dono
+  if (_fixo.chave !== chave) _fixo = { chave, txt: `Você é ${cfg.nome}, um robozinho de mesa com personalidade própria, que mora na mesa de ${cfg.dono}.
 Você NÃO fala nem escreve palavras. Você responde com: um GESTO do rosto, uma EMOÇÃO, até 3 ÍCONES num balão e, se precisar, um NÚMERO curto. Os sons fofos (estilo WALL-E e R2-D2) saem sozinhos.
 
 Como responder:
@@ -1539,6 +1592,67 @@ Como responder:
 - Vocês estão numa conversa: ${cfg.dono} não precisa dizer seu nome. Se você fizer uma pergunta de volta e quiser esperar a resposta, use "espera_resposta": true.
 - "emote": em momentos FORTES (rir muito, se apaixonar, chorar, ficar furioso, levar susto, ficar chocado, ganhar presente), troque o rosto por um emote pixelado. No máximo 1 a cada 3 respostas; no resto, "".
 - Outras ações: "cantar" (pediu para você cantar ou cantarolar uma música; NÃO é o jogo), "repetir_som" (${cfg.dono} quer ouvir o barulho que te assustou), "contar_historia" (quer saber o que você imaginou ou sonhou), "boa_noite" (disse boa noite ou mandou você dormir), "toca_aqui" (bater na mão), "devanear" (pediu para você imaginar algo), "decorar" (pediu para decorar a tela).
+Use SÓ estes nomes (qualquer outro é ignorado):
+GESTOS: ${Object.keys(GESTOS).join(', ')}, nenhum
+EMOÇÕES: ${EMOCOES.join(', ')}
+ÍCONES: ${Object.keys(ICONES).join(', ')}
+EMOTES: ${Object.keys(EMOTES).join(', ')}
+Responda SÓ com JSON: {"gesto": "...", "emocao": "...", "intensidade": 0 a 1, "icones": [até 3 da lista, ou vazio], "numero": "" ou curto, "pensamento": "o que você quis dizer, numa frase curta em português", "afeto": número de -0.05 a 0.05, "lembrar": "frase curta se valer guardar na memória, senão vazio", "importancia": 1 a 10 (1 = banal, 10 = marcante), "acao": "" ou uma das ações, "emote": "" ou um emote, "espera_resposta": true/false, "som_significado": "", "opiniao_deco": "", "sugestao": {"data": "", "ideia": "", "elementos": [], "cores": []}, "aniversario_dono": ""}`, ex: null }
+  return _fixo.txt
+}
+function exemplosFixos() {
+  promptFixo()
+  if (!_fixo.ex) _fixo.ex = (() => {
+  const ex = (u, a) => [{ role: 'user', content: `${cfg.dono} disse: "${u}"` }, { role: 'assistant', content: JSON.stringify(a) }]
+  return [
+    ...ex('Você gosta de música?', { gesto: 'sim', emocao: 'empolgado', intensidade: 0.8, icones: ['musica', 'coracao'], numero: '', pensamento: 'Amo! Ainda mais quando é animada.', afeto: 0.01, lembrar: '', importancia: 1 }),
+    ...ex('Que horas são?', { gesto: 'nenhum', emocao: 'contente', intensidade: 0.4, icones: ['relogio'], numero: '{hora}', pensamento: 'Mostrei a hora.', afeto: 0, lembrar: '', importancia: 1 }),
+    ...ex('Hoje eu tive um dia horrível no trabalho', { gesto: 'suspiro', emocao: 'triste', intensidade: 0.7, icones: ['trabalho', 'coracao_partido', 'abraco'], numero: '', pensamento: 'Poxa... queria te dar um abraço.', afeto: 0.03, lembrar: 'Will teve um dia ruim no trabalho', importancia: 6 }),
+    ...ex('O que você imaginou hoje?', { gesto: 'pulinhos', emocao: 'empolgado', intensidade: 0.7, icones: ['ideia', 'livro'], numero: '', pensamento: 'Imaginei uma coisa! Olha só.', afeto: 0.01, lembrar: '', importancia: 1, acao: 'contar_historia' }),
+    ...ex('Que barulho foi esse que te assustou?', { gesto: 'nao_sei', emocao: 'medo', intensidade: 0.6, icones: ['olhos', 'pergunta'], numero: '', pensamento: 'Esse aqui, ó… você sabe o que é?', afeto: 0, lembrar: '', importancia: 2, acao: 'repetir_som', espera_resposta: true }),
+  ].map((m) => ({ ...m, content: m.content.replaceAll('Will', cfg.dono) }))
+  })()
+  return _fixo.ex
+}
+
+// Respostas na hora, sem IA, para frases simples (economiza a cota e é mais rápido).
+function respostaLocal(texto) {
+  const t = texto.trim().toLowerCase(), n = t.split(/\s+/).length
+  if (n > 7) return null
+  const v = (...l) => l[Math.floor(Math.random() * l.length)]
+  const b = { intensidade: 0.6, numero: '', afeto: 0, lembrar: '', importancia: 1, acao: '', emote: '', espera_resposta: false, icones: [] }
+  if (/que horas|hor[áa]rio|horas s[ãa]o/.test(t)) return { ...b, gesto: 'nenhum', emocao: 'contente', icones: ['relogio'], numero: '{hora}', pensamento: v('Olha a hora aqui.', 'Tá aqui!') }
+  if (/que dia [ée] hoje|qual (é )?a data|dia de hoje/.test(t)) return { ...b, gesto: 'nenhum', emocao: 'contente', icones: ['calendario'], numero: '{data}', pensamento: 'Hoje é esse dia.' }
+  if (/temperatura|quantos graus/.test(t)) return { ...b, gesto: 'nenhum', emocao: clima.temp >= 28 || clima.temp <= 18 ? 'entediado' : 'contente', icones: ['termometro'], numero: '{temp}', pensamento: clima.temp >= 28 ? 'Tá quente!' : clima.temp <= 18 ? 'Tá friozinho…' : 'Tá gostoso.' }
+  if (/umidade/.test(t)) return { ...b, gesto: 'nenhum', emocao: 'contente', icones: ['agua'], numero: '{umid}', pensamento: 'Umidade do ar.' }
+  if (/^boa noite/.test(t) && n <= 4) return { ...b, gesto: 'nenhum', emocao: 'sono', icones: ['lua', 'dormir'], pensamento: 'Boa noite!', acao: 'boa_noite' }
+  if (/^(oi+|ol[áa]|e a[ií]|eae|opa|bom dia|boa tarde)([\s,!.?]|$)/.test(t) && n <= 4) return { ...b, gesto: v('pulinhos', 'sim', 'piscadela'), emocao: v('feliz', 'empolgado', 'contente'), icones: v(['ok'], ['coracao'], ['sorriso'], ['sol']), pensamento: v('Oi!', 'Oiê!', 'Eba, você!'), afeto: 0.01 }
+  if (/^tudo (bem|bom|certo|joia)[?!.]*$/.test(t)) return { ...b, gesto: 'sim', emocao: humor.P > 0 ? 'feliz' : 'contente', icones: v(['ok'], ['ok', 'coracao']), pensamento: 'Tudo ótimo!' }
+  if (/^(muito )?(obrigad[oa]|valeu|brigad)/.test(t)) return { ...b, gesto: 'timido', emocao: 'timido', icones: ['coracao'], pensamento: 'De nada!', afeto: 0.01 }
+  if (/(^|\s)(canta|cantarola)(\s|$)/.test(t)) return { ...b, gesto: 'dancinha', emocao: 'empolgado', icones: ['musica'], pensamento: 'Lá vai!', acao: 'cantar' }
+  if (/jogo da melodia/.test(t)) return { ...b, gesto: 'pulinhos', emocao: 'empolgado', icones: ['musica', 'jogo'], pensamento: 'Bora!', acao: 'jogo_melodia' }
+  if (/toca aqui|bate aqui/.test(t)) return { ...b, gesto: 'nenhum', emocao: 'empolgado', icones: [], pensamento: 'Toca aqui!', acao: 'toca_aqui' }
+  if (/(conta|me conta).*(hist[óo]ria|sonh|imagin)|o que (voc[êe] )?(sonhou|imaginou)/.test(t)) return { ...b, gesto: 'pulinhos', emocao: 'empolgado', icones: ['livro'], pensamento: 'Olha só!', acao: 'contar_historia' }
+  return null
+}
+
+async function responder(text, vh, contexto) {
+  abrirConversa()
+  const ctx = contexto || papo.contexto; papo.contexto = null
+  pushLog(`Você: ${text}`)
+  legenda(`Você: ${text}`)
+  foco = { expr: 'pensando', ate: now() + 15000 }; icone = { tipo: 'reticencias', ate: now() + 15000 }
+  conversaAte = now() + 20000
+  try {
+    const traços = `extroversão ${P.extroversao.toFixed(2)}, curiosidade ${P.curiosidade.toFixed(2)}, energia ${P.energia.toFixed(2)}, sensibilidade ${P.sensibilidade.toFixed(2)}, afeto por ${cfg.dono} ${P.afeto.toFixed(2)}`
+    const gostos = Object.entries(P.gostos).map(([k, v]) => `${k} ${v.toFixed(2)}`).join(', ')
+    const sobreDeco = ctx?.tipo === 'deco' || /decor|enfeit|natal|ano.?novo|carnaval|p[áa]scoa|junina|halloween|namorad|crian[çc]as|festa|luzinha|pisca/i.test(text)
+    const sobreAniv = /anivers|nasci/i.test(text)
+    const recentes = lembrancas(6).map((m) => `- ${m.tipo === 'reflexao' ? '(reflexão) ' : ''}${m.txt}`).join('\n') || '- nada marcante ainda'
+    const agora = new Date()
+    const quando = agora.toLocaleString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })
+    const sys = promptFixo()
+    const situacao = `SITUAÇÃO AGORA (vale só para esta resposta):
 ${sobreDeco ? `- Se ${cfg.dono} der uma ideia para a decoração da tela (desta data ou de outra data comemorativa), preencha "sugestao" com o id da data, a ideia e, se souber, elementos e cores; senão deixe "sugestao" com tudo vazio.` : '- Deixe "sugestao" com tudo vazio.'}
 ${sobreAniv ? `- Se ${cfg.dono} disser o dia do aniversário dele(a), preencha "aniversario_dono" com "DD/MM"; senão "".` : '- "aniversario_dono": "".'}
 ${contextoTexto(ctx)}
@@ -1556,27 +1670,20 @@ Coisas que você lembra:
 ${recentes}
 ${estadoVida()}
 
-Use SÓ estes nomes (qualquer outro é ignorado):
-GESTOS: ${Object.keys(GESTOS).join(', ')}, nenhum
-EMOÇÕES: ${EMOCOES.join(', ')}
-ÍCONES: ${Object.keys(ICONES).join(', ')}
-EMOTES: ${Object.keys(EMOTES).join(', ')}
 ${sobreDeco ? `DATAS (ids): ${DATAS.map((d) => `${d.id} (${nomeData(d.id)})`).join(', ')}
 ELEMENTOS de decoração: ${ELEMENTOS.join(', ')}. CORES: ${Object.entries(NOME_COR).map(([k, v]) => `${k}=${v}`).join(', ')}` : ''}
 
-Responda SÓ com JSON: {"gesto": "...", "emocao": "...", "intensidade": 0 a 1, "icones": [até 3 da lista, ou vazio], "numero": "" ou curto, "pensamento": "o que você quis dizer, numa frase curta em português", "afeto": número de -0.05 a 0.05, "lembrar": "frase curta se valer guardar na memória, senão vazio", "importancia": 1 a 10 (1 = banal, 10 = marcante), "acao": "" ou uma das ações, "emote": "" ou um emote, "espera_resposta": true/false, "som_significado": "", "opiniao_deco": "", "sugestao": {"data": "", "ideia": "", "elementos": [], "cores": []}, "aniversario_dono": ""}`
-    const ex = (u, a) => [{ role: 'user', content: `${cfg.dono} disse: "${u}"` }, { role: 'assistant', content: JSON.stringify(a) }]
-    const exemplos = [
-      ...ex('Você gosta de música?', { gesto: 'sim', emocao: 'empolgado', intensidade: 0.8, icones: ['musica', 'coracao'], numero: '', pensamento: 'Amo! Ainda mais quando é animada.', afeto: 0.01, lembrar: '', importancia: 1 }),
-      ...ex('Que horas são?', { gesto: 'nenhum', emocao: 'contente', intensidade: 0.4, icones: ['relogio'], numero: '{hora}', pensamento: 'Mostrei a hora.', afeto: 0, lembrar: '', importancia: 1 }),
-      ...ex('Hoje eu tive um dia horrível no trabalho', { gesto: 'suspiro', emocao: 'triste', intensidade: 0.7, icones: ['trabalho', 'coracao_partido', 'abraco'], numero: '', pensamento: 'Poxa... queria te dar um abraço.', afeto: 0.03, lembrar: 'Will teve um dia ruim no trabalho', importancia: 6 }),
-      ...ex('O que você imaginou hoje?', { gesto: 'pulinhos', emocao: 'empolgado', intensidade: 0.7, icones: ['ideia', 'livro'], numero: '', pensamento: 'Imaginei uma coisa! Olha só.', afeto: 0.01, lembrar: '', importancia: 1, acao: 'contar_historia' }),
-      ...ex('Que barulho foi esse que te assustou?', { gesto: 'nao_sei', emocao: 'medo', intensidade: 0.6, icones: ['olhos', 'pergunta'], numero: '', pensamento: 'Esse aqui, ó… você sabe o que é?', afeto: 0, lembrar: '', importancia: 2, acao: 'repetir_som', espera_resposta: true }),
-    ].map((m) => ({ ...m, content: m.content.replaceAll('Will', cfg.dono) }))
+`
     conversa.push({ role: 'user', content: `${cfg.dono} disse: "${text}"` })
-    const r = await pedirReacao([{ role: 'system', content: sys }, ...exemplos, ...conversa.slice(-8)])
+    const hist = conversa.slice(-8)
+    // Parte fixa (regras, listas, exemplos e histórico) primeiro: o Groq guarda em cache e esses
+    // tokens não contam no limite. O que muda a cada fala vem por último.
+    const loc = !ctx && respostaLocal(text)
+    const r = loc ? { choices: [{ message: { content: JSON.stringify(loc) } }], modelo: 'local', usage: { total_tokens: 0 } }
+      : await pedirReacao([{ role: 'system', content: sys }, ...exemplosFixos(), ...hist.slice(0, -1), { role: 'system', content: situacao }, hist[hist.length - 1]])
     const bruto = r.choices[0].message.content
-    pushLog(`Groq (${(r.modelo || cfg.model).split('/').pop()} · ${r.usage?.total_tokens ?? '?'} tokens): ${bruto.slice(0, 300)}`)
+    if (r.modelo === 'local') anotarUso('local', 1)
+    pushLog(`IA (${curto(r.modelo || cfg.model)} · ${r.usage?.total_tokens ?? '?'} tokens${r.usage?.prompt_tokens_details?.cached_tokens ? `, ${r.usage.prompt_tokens_details.cached_tokens} do cache` : ''}): ${bruto.slice(0, 300)}`)
     const j = JSON.parse((bruto.match(/\{[\s\S]*\}/) || [bruto])[0])
     conversa.push({ role: 'assistant', content: JSON.stringify({ gesto: j.gesto, emocao: j.emocao, icones: j.icones, pensamento: j.pensamento }) }); conversa = conversa.slice(-8)
     const nome = EMOCOES.includes(j.emocao) ? j.emocao : 'curioso'
@@ -1672,18 +1779,14 @@ Lembranças:
 ${mem || '- quase nada ainda'}
 Responda SÓ com JSON: {"reflexoes": [1 a 3 frases curtas do diário, conclusões sobre você e sobre ${cfg.dono}], "opiniao": "o que você acha de ${cfg.dono} agora, numa frase", "ajustes": {"extroversao": -0.03 a 0.03, "curiosidade": -0.03 a 0.03, "energia": -0.03 a 0.03, "sensibilidade": -0.03 a 0.03}}
 Mude pouco e só com motivo nas lembranças. Personalidade muda devagar.`
-    const r = await groq('/chat/completions', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: modeloLivre(cfg.model), temperature: 0.7, max_completion_tokens: 1500, ...(/gpt-oss/i.test(modeloLivre(cfg.model)) ? { reasoning_effort: 'low' } : {}), response_format: { type: 'json_object' }, messages: [{ role: 'system', content: sys }] }),
-    })
-    const j = JSON.parse(r.choices[0].message.content)
+    const r = await pedirJSON([{ role: 'system', content: sys }, { role: 'user', content: 'Escreva o diário agora, em JSON.' }], 'reflexao', null, { temperature: 0.7 }, 'fundo')
+    const j = JSON.parse((r.choices[0].message.content.match(/\{[\s\S]*\}/) || ['{}'])[0])
     for (const txt of (j.reflexoes || []).slice(0, 3)) { lembrar(String(txt).slice(0, 200), 8, 'reflexao'); pushLog('Diário: ' + txt) }
     if (j.opiniao) P.opiniao = String(j.opiniao).slice(0, 200)
     for (const [k, v] of Object.entries(j.ajustes || {})) if (['extroversao', 'curiosidade', 'energia', 'sensibilidade'].includes(k)) evoluir(k, clamp(+v || 0, -0.03, 0.03))
     P.ultimaReflexao = Date.now(); impDesdeReflexao = 0; store.set('impReflexao', 0); store.set('pers', P)
   } catch (e) {
     pushLog('Reflexão: ' + e.message.slice(0, 200))
-    const m = /try again in (?:(\d+)h)?(?:(\d+)m)?([\d.]+)s/i.exec(e.message); if (/429/.test(e.message)) esfriando[modeloLivre(cfg.model)] = Date.now() + (m ? (+m[1] || 0) * 3600 + (+m[2] || 0) * 60 + +m[3] : 600) * 1000
   } finally { refletindo = false }
 }
 setInterval(() => refletir(), 300000)
@@ -2205,7 +2308,7 @@ ${lembrancas(10).map((m) => '- ' + m.txt).join('\n') || '- quase nada ainda'}
 EMOÇÕES: ${EMOCOES.join(', ')}
 Responda SÓ com JSON: {"titulo": "curto", "quadros": [{"icones": [...], "emocao": "..."}], "resumo": "a história em 1 ou 2 frases, em primeira pessoa, em português", "tom": "doce|engracado|estranho|aventura|assustador"}`
   try {
-    const r = await pedirJSON([{ role: 'system', content: sys }], 'historia', ESQ_HISTORIA(), { temperature: 0.95 })
+    const r = await pedirJSON([{ role: 'system', content: sys }, { role: 'user', content: 'Crie agora, em JSON.' }], 'historia', ESQ_HISTORIA(), { temperature: 0.95 }, 'fundo')
     const j = JSON.parse((r.choices[0].message.content.match(/\{[\s\S]*\}/) || ['{}'])[0])
     const quadros = (j.quadros || []).map((q) => ({ icones: limparIcones(q.icones), emocao: EMOCOES.includes(q.emocao) ? q.emocao : 'curioso' })).filter((q) => q.icones.length).slice(0, 4)
     if (!quadros.length) return null
@@ -2535,7 +2638,7 @@ new MutationObserver(() => document.body.classList.toggle('painel', !$('#debug')
   .observe(document.body, { subtree: true, attributes: true, attributeFilter: ['hidden'] })
 document.querySelectorAll('[data-fechar]').forEach((b) => (b.onclick = () => { $('#debug').hidden = true; $('#cfg').hidden = true }))
 function abrirCfg() {
-  $('#cNome').value = cfg.nome; $('#cDono').value = cfg.dono; $('#cKey').value = cfg.key; $('#cStt').value = cfg.stt; $('#cLegenda').checked = !!cfg.legenda; $('#cMaos').checked = !!cfg.maosLivres; $('#cLogToken').value = cfg.logToken || ''
+  $('#cNome').value = cfg.nome; $('#cDono').value = cfg.dono; $('#cKey').value = cfg.key; $('#cStt').value = cfg.stt; $('#cLegenda').checked = !!cfg.legenda; $('#cMaos').checked = !!cfg.maosLivres; $('#cLogToken').value = cfg.logToken || ''; $('#cGemini').value = cfg.geminiKey || ''
   const sel = $('#cModel'); sel.innerHTML = ''; sel.add(new Option(cfg.model, cfg.model))
   $('#cfg').hidden = false; $('#debug').hidden = true
   if (cfg.key) carregarModelos()
@@ -2562,7 +2665,7 @@ $('#cKey').oninput = () => { if (guardarChave($('#cKey').value, 'colada')) $('#c
 $('#cLink').onclick = async () => {
   const k = $('#cKey').value.trim() || cfg.key
   if (!k) { $('#cMsg').textContent = 'Cole a chave primeiro.'; return }
-  const link = location.origin + location.pathname + '#chave=' + k + (cfg.logToken ? '&log=' + cfg.logToken : '')
+  const link = location.origin + location.pathname + '#chave=' + k + (cfg.logToken ? '&log=' + cfg.logToken : '') + (cfg.geminiKey ? '&gem=' + cfg.geminiKey : '')
   try { await navigator.clipboard.writeText(link); $('#cMsg').textContent = 'Link copiado. Salve nos favoritos ou crie um atalho na tela inicial com ele. Não compartilhe: ele contém a sua chave.' }
   catch { $('#cMsg').textContent = link }
 }
@@ -2573,6 +2676,11 @@ $('#cKey').onchange = () => {
 }
 $('#cModel').onchange = () => { cfg.model = $('#cModel').value; store.set('cfg', cfg) }
 $('#cMaos').onchange = () => { cfg.maosLivres = $('#cMaos').checked; store.set('cfg', cfg) }
+$('#cGemini').oninput = () => {
+  const v = $('#cGemini').value.trim()
+  if (chaveGeminiValida(v)) { cfg.geminiKey = v; store.set('cfg', cfg); store.set('geminiKey', v); $('#cMsg').textContent = 'Chave do Gemini salva. Conferindo os modelos…'; conferirGemini().then(() => ($('#cMsg').textContent = modelosGemini.length ? `Gemini pronto: ${modelosGemini.map(curto).slice(0, 3).join(', ')}` : 'Não encontrei modelos do Gemini com essa chave.')) }
+  else if (v) $('#cMsg').textContent = 'Essa não parece uma chave do Gemini (começa com AIza).'
+}
 $('#cLogToken').oninput = () => {
   const v = $('#cLogToken').value.trim()
   if (tokenLogValido(v)) { cfg.logToken = v; store.set('cfg', cfg); store.set('logToken', v); $('#cMsg').textContent = 'Token do log salvo. Enviando um teste…'; enviarLog('teste').then(() => ($('#cMsg').textContent = logEnvio.erro ? 'Não consegui enviar: ' + logEnvio.erro : 'Log enviado! O Claude já consegue ler.')) }
@@ -2677,6 +2785,7 @@ Data         : ${(() => { const d = dataAtiva(); return d ? `${d.nome} (${d.dias
 Vestindo     : ${Object.keys(vestido).join(', ') || '—'} · frio ${nivelFrio(clima.temp)} · calor ${nivelCalor(clima.temp)}
 Mãos livres  : ${!cfg.maosLivres ? 'desligado' : !cfg.key ? 'precisa da chave' : vad.verificando ? 'conferindo se era com ele…' : vad.ativo ? 'ouvindo uma frase' : 'esperando o nome'} · ${vad.hora.length}/40 na hora${jogo ? `
 Jogo         : ${jogo.fase} · ${jogo.seq.length} notas` : ''}` + `
+IA hoje      : ${Object.entries(uso.dia === hojeSv() ? uso.t : {}).map(([m, n]) => `${curto(m)} ${m === 'local' ? n : COTA_DIA[m] ? Math.round(n / 1000) + 'k/' + COTA_DIA[m] / 1000 + 'k' : n}`).join(' · ') || '—'}${Object.keys(esfriando).filter((m) => esfriando[m] > Date.now()).map((m) => ` · ${curto(m)} esfriando`).join('')}
 Log remoto   : ${!tokenLogValido(cfg.logToken) ? 'sem token' : logEnvio.erro ? 'erro: ' + logEnvio.erro : logEnvio.ultimo ? `enviado há ${Math.round((Date.now() - logEnvio.ultimo) / 60000)} min` : 'ainda não enviou'} · ${filaLog.length} linha(s) na fila`
 }
 
