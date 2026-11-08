@@ -17,7 +17,7 @@ const store = {
 }
 
 // ---------------------------------------------------------------- barramento
-const VERSAO = 'v12 · 08/11'
+const VERSAO = 'v13 · 08/11'
 const logLines = []
 const filaLog = [] // tudo o que aconteceu desde o último envio para o log remoto
 function pushLog(s) {
@@ -180,7 +180,7 @@ function evento(e) {
   acordar()
   if (e.expr && ganho > 0.45) foco = { expr: e.expr, ate: now() + (e.dur || 2500) }
   if (e.icone) icone = { tipo: e.icone, ate: now() + (e.dur || 2500) + 500 }
-  if (e.icones?.length || e.numero) balao = { itens: (e.icones || []).filter((k) => ICONES[k]).slice(0, 3), numero: String(e.numero || '').slice(0, 6), t0: now(), ate: now() + Math.max(4500, e.dur || 0) }
+  if (e.icones?.length || e.numero) balao = { itens: (e.icones || []).filter((k) => ICONES[k]).slice(0, 3), numero: String(e.numero || '').slice(0, 9), t0: now(), ate: now() + Math.max(4500, e.dur || 0) }
   const fezGesto = e.gesto && e.gesto !== 'nenhum' && GESTOS[e.gesto] && (ganho > 0.45 || e.forcarGesto)
   if (fezGesto) iniciarGesto(e.gesto)
   if (fezGesto && SOM_GESTO[e.gesto]) somGesto(e.gesto)
@@ -413,9 +413,13 @@ const ICONES = {
   ok: '👍', nao_ok: '👎', certo: '✅', errado: '❌', coracao: '❤️', coracao_partido: '💔', abraco: '🤗', musculo: '💪',
   cerebro: '🧠', olhos: '👀', dormir: '💤', doente: '🤒', remedio: '💊', cachorro: '🐶', gato: '🐱', planta: '🌱',
   flor: '🌸', carro: '🚗', aviao: '✈️', mundo: '🌍', brasil: '🇧🇷', robo: '🤖', pessoa: '🧑', familia: '👪',
-  arvore: '🎄', sino: '🔔', vela: '🕯️', termometro: '🌡️', coroa: '👑', sorriso: '😊', praia: '🏖️', luz: '💡', pergunta: '❓', raio: '⚡', bateria: '🔋', wifi: '📶', seta_cima: '⬆️', seta_baixo: '⬇️', mais: '➕', menos: '➖', fantasma: '👻',
+  teclado: '⌨️', calculadora: '🧮', ouvido: '👂', sorvete: '🍦', pizza: '🍕', arvore: '🎄', sino: '🔔', vela: '🕯️', termometro: '🌡️', coroa: '👑', sorriso: '😊', praia: '🏖️', luz: '💡', pergunta: '❓', raio: '⚡', bateria: '🔋', wifi: '📶', seta_cima: '⬆️', seta_baixo: '⬇️', mais: '➕', menos: '➖', fantasma: '👻',
 }
 let balao = null // {itens, numero, ate}
+// O modelo às vezes escreve o nome do ícone de outro jeito ("coração", "olho", "som"): aceita.
+const APELIDO_ICONE = { olho: 'olhos', som: 'musica', soma: 'mais', codigo: 'computador', aprender: 'cerebro', assobio: 'musica', canto: 'musica', cancao: 'musica', jogar: 'jogo', ideia_brilhante: 'ideia', sol_quente: 'sol', frio: 'neve', amor: 'coracao', feliz: 'sorriso', livros: 'livro', estrela_cadente: 'estrela', arvore_de_natal: 'arvore', natal: 'arvore', comida_gostosa: 'comida' }
+function icone_(x) { const k = String(x || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z_]/g, ''); return ICONES[k] ? k : ICONES[APELIDO_ICONE[k]] ? APELIDO_ICONE[k] : null }
+const limparIcones = (l) => [...new Set((Array.isArray(l) ? l : []).map(icone_).filter(Boolean))].slice(0, 3)
 const olhar = { x: 0, y: 0, vx: 0, vy: 0, tx: 0, ty: 0, mx: 0, my: 0, proxSacada: 0, proxMicro: 0 }
 let piscar = 0, proxPiscar = now() + 3000, balanco = 0, inclinacao = 0
 
@@ -1426,7 +1430,7 @@ function erroConversa(err) {
   somDe('triste', 0.4)
 }
 // Formato da resposta preso às listas: o modelo não consegue inventar gesto, emoção ou ícone.
-const ACOES = ['', 'jogo_melodia', 'repetir_som', 'contar_historia', 'boa_noite', 'toca_aqui', 'devanear', 'decorar']
+const ACOES = ['', 'cantar', 'jogo_melodia', 'repetir_som', 'contar_historia', 'boa_noite', 'toca_aqui', 'devanear', 'decorar']
 const ESQUEMA = () => ({
   type: 'object', additionalProperties: false,
   required: ['gesto', 'emocao', 'intensidade', 'icones', 'numero', 'pensamento', 'afeto', 'lembrar', 'importancia', 'acao', 'emote', 'espera_resposta', 'som_significado', 'opiniao_deco', 'sugestao', 'aniversario_dono'],
@@ -1466,10 +1470,10 @@ async function pedirJSON(messages, nome, esquema, extra = {}) {
     } catch (e) {
       erro = e
       if (!/Groq 429/.test(e.message)) throw e
-      const m = /try again in (?:(\d+)m)?([\d.]+)s/i.exec(e.message), seg = m ? (+m[1] || 0) * 60 + +m[2] : 60
+      const m = /try again in (?:(\d+)h)?(?:(\d+)m)?([\d.]+)s/i.exec(e.message), seg = m ? (+m[1] || 0) * 3600 + (+m[2] || 0) * 60 + +m[3] : 60, tipoLim = /per day|TPD|RPD/i.test(e.message) ? 'do dia' : 'por minuto'
       esfriando[modelo] = Date.now() + seg * 1000 + 500
       const outro = modeloLivre(modelo)
-      if (outro !== modelo) { pushLog(`Groq: limite por minuto do ${modelo.split('/').pop()} (volta em ${Math.ceil(seg)} s); usando ${outro.split('/').pop()}`); modelo = outro; continue }
+      if (outro !== modelo) { pushLog(`Groq: limite ${tipoLim} do ${modelo.split('/').pop()} (volta em ${Math.ceil(seg)} s); usando ${outro.split('/').pop()}`); modelo = outro; continue }
       if (seg <= 12) { pushLog(`Groq: limite por minuto; esperando ${Math.ceil(seg)} s`); await new Promise((ok) => setTimeout(ok, seg * 1000 + 300)); continue }
       throw e
     }
@@ -1486,6 +1490,7 @@ async function conferirModelo() {
     const { data } = await groq('/models')
     const ids = data.map((m) => m.id)
     modelosGroq = ids
+    pushLog(`Modelos bons disponíveis: ${MODELOS_BONS.map((re) => ids.find((i) => re.test(i))).filter(Boolean).join(', ') || 'nenhum'}`)
     if (ids.includes(cfg.model) && modeloBom(cfg.model)) return pushLog(`Modelo de conversa: ${cfg.model}`)
     const melhor = MODELOS_BONS.map((re) => ids.find((i) => re.test(i))).find(Boolean)
     if (!melhor) return
@@ -1524,7 +1529,7 @@ Você NÃO fala nem escreve palavras. Você responde com: um GESTO do rosto, uma
 Como responder:
 - Pergunta de sim/não: use o gesto "sim" ou "nao" (ou "talvez", "nao_sei"). Isso é o mais importante.
 - Para dizer algo, combine ícones em ordem, como uma frase de figurinhas. Ex.: "vai chover?" → gesto "nao_sei", ícones ["nuvem","chuva"]. "Tá com fome?" → "nao" + ["robo","bateria"]. "O que você quer fazer?" → gesto "dancinha" + ["musica","jogo"]. Use só nomes que estão nas listas abaixo.
-- Hora, data, temperatura e umidade: NUNCA escreva o valor você mesmo. Use exatamente "numero": "{hora}", "{data}", "{temp}" ou "{umid}", que o robô preenche com o valor certo. Para outras contagens, use "numero" com até 6 caracteres (ex.: "3", "10+").
+- Hora, data, temperatura e umidade: NUNCA escreva o valor você mesmo. Use exatamente "numero": "{hora}", "{data}", "{temp}" ou "{umid}", que o robô preenche com o valor certo. Para outras contagens use "numero" curto (ex.: "3", "10+"). Contas e jogos de matemática: mostre a conta no "numero" (ex.: "5+6=?"), porque é o único jeito de aparecer escrita na tela.
 - Piadas: "rir". Elogio: "timido" ou "orgulhoso". Notícia triste: "chorando" ou "suspiro". Coisa estranha: "desconfiado". Coisa confusa: "tonto". Algo incrível: "pulinhos" ou "empolgado".
 - Seja coerente com o humor de hoje: de mau humor reage menos; entediado, só algo interessante anima. Não seja sempre feliz. Varie os gestos.
 - NUNCA invente motivo para o seu humor. Se perguntarem por que você está assim, explique pelos "Acontecimentos recentes" abaixo; se nada explica, diga que acordou assim mesmo (gesto "nao_sei").
@@ -1533,7 +1538,7 @@ Como responder:
 - Se ${cfg.dono} quiser jogar o jogo da melodia (ou um jogo de música, de assobiar, de repetir notas), use "acao": "jogo_melodia".
 - Vocês estão numa conversa: ${cfg.dono} não precisa dizer seu nome. Se você fizer uma pergunta de volta e quiser esperar a resposta, use "espera_resposta": true.
 - "emote": em momentos FORTES (rir muito, se apaixonar, chorar, ficar furioso, levar susto, ficar chocado, ganhar presente), troque o rosto por um emote pixelado. No máximo 1 a cada 3 respostas; no resto, "".
-- Outras ações: "repetir_som" (${cfg.dono} quer ouvir o barulho que te assustou), "contar_historia" (quer saber o que você imaginou ou sonhou), "boa_noite" (disse boa noite ou mandou você dormir), "toca_aqui" (bater na mão), "devanear" (pediu para você imaginar algo), "decorar" (pediu para decorar a tela).
+- Outras ações: "cantar" (pediu para você cantar ou cantarolar uma música; NÃO é o jogo), "repetir_som" (${cfg.dono} quer ouvir o barulho que te assustou), "contar_historia" (quer saber o que você imaginou ou sonhou), "boa_noite" (disse boa noite ou mandou você dormir), "toca_aqui" (bater na mão), "devanear" (pediu para você imaginar algo), "decorar" (pediu para decorar a tela).
 ${sobreDeco ? `- Se ${cfg.dono} der uma ideia para a decoração da tela (desta data ou de outra data comemorativa), preencha "sugestao" com o id da data, a ideia e, se souber, elementos e cores; senão deixe "sugestao" com tudo vazio.` : '- Deixe "sugestao" com tudo vazio.'}
 ${sobreAniv ? `- Se ${cfg.dono} disser o dia do aniversário dele(a), preencha "aniversario_dono" com "DD/MM"; senão "".` : '- "aniversario_dono": "".'}
 ${contextoTexto(ctx)}
@@ -1576,7 +1581,7 @@ Responda SÓ com JSON: {"gesto": "...", "emocao": "...", "intensidade": 0 a 1, "
     conversa.push({ role: 'assistant', content: JSON.stringify({ gesto: j.gesto, emocao: j.emocao, icones: j.icones, pensamento: j.pensamento }) }); conversa = conversa.slice(-8)
     const nome = EMOCOES.includes(j.emocao) ? j.emocao : 'curioso'
     const gest = GESTOS[j.gesto] ? j.gesto : 'nenhum'
-    const icns = Array.isArray(j.icones) ? j.icones.filter((x) => ICONES[x]).slice(0, 3) : []
+    const icns = limparIcones(j.icones)
     const v = PAD[nome], k = clamp(+j.intensidade || 0.5, 0, 1)
     // Valores que o modelo não pode inventar: o próprio robô preenche (relógio e sensor).
     const hoje = new Date()
@@ -1588,7 +1593,7 @@ Responda SÓ com JSON: {"gesto": "...", "emocao": "...", "intensidade": 0 a 1, "
     // Número: só os do robô (hora, data, sensores) ou uma contagem curta. Hora inventada pelo modelo não passa.
     j.numero = String(j.numero || '').trim()
     if (/\{(hora|data|temp|umid)\}/.test(j.numero)) j.numero = j.numero.replace(/\{(hora|data|temp|umid)\}/g, (_, x) => valores[x])
-    else if (!/^\d{1,4}\+?$/.test(j.numero)) j.numero = ''
+    else if (!/^[\d+\-x×*÷/=?., ]{1,9}$/.test(j.numero)) j.numero = '' // número curto ou conta ("5+6=?")
     // Garantia: pergunta de hora ou data sempre mostra o relógio do celular, mesmo se o modelo errar.
     if (/que horas|hor[áa]rio|horas s[ãa]o/i.test(text)) j.numero = valores.hora
     else if (/que dia [ée] hoje|qual (a )?data|dia de hoje/i.test(text)) j.numero = valores.data
@@ -1612,7 +1617,7 @@ Responda SÓ com JSON: {"gesto": "...", "emocao": "...", "intensidade": 0 a 1, "
     else if (sobreDeco && /\b(coloc|adicion|p[õo]e|p[õo]r|bota|decor|enfeit|acrescent|faz|faça)/i.test(text)) receberSugestao({ data: dataAtiva()?.id || '', ideia: text.slice(0, 100), elementos: [], cores: [] })
     if (/^\d{1,2}\/\d{1,2}$/.test(j.aniversario_dono || '') && P.anivDono !== j.aniversario_dono) { P.anivDono = j.aniversario_dono; lembrar(`O aniversário de ${cfg.dono} é ${j.aniversario_dono}`, 8); store.set('pers', P) }
     if (ctx?.tipo === 'pesadelo' && v[0] > 0.2) { P.confianca = clamp(P.confianca + 0.02, 0.05, 0.95); lembrar(`${cfg.dono} me consolou depois de um pesadelo`, 7) }
-    const acoes = { jogo_melodia: iniciarJogo, repetir_som: repetirUltimoSom, contar_historia: () => contarHistoria(), boa_noite: ritualBoaNoite, toca_aqui: comecarTocaAqui, devanear: () => devanear(true), decorar: () => decorar(true) }
+    const acoes = { cantar: cantarMusica, jogo_melodia: iniciarJogo, repetir_som: repetirUltimoSom, contar_historia: () => contarHistoria(), boa_noite: ritualBoaNoite, toca_aqui: comecarTocaAqui, devanear: () => devanear(true), decorar: () => decorar(true) }
     if (acoes[j.acao]) setTimeout(acoes[j.acao], j.acao === 'toca_aqui' ? 2000 : 2600)
     if (RE_TCHAU.test(text) && j.acao !== 'boa_noite') papo.ate = now() + 4000
   } catch (err) { erroConversa(err) }
@@ -1669,14 +1674,17 @@ Responda SÓ com JSON: {"reflexoes": [1 a 3 frases curtas do diário, conclusõe
 Mude pouco e só com motivo nas lembranças. Personalidade muda devagar.`
     const r = await groq('/chat/completions', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: cfg.model, temperature: 0.7, max_completion_tokens: 1500, ...(/gpt-oss/i.test(cfg.model) ? { reasoning_effort: 'low' } : {}), response_format: { type: 'json_object' }, messages: [{ role: 'system', content: sys }] }),
+      body: JSON.stringify({ model: modeloLivre(cfg.model), temperature: 0.7, max_completion_tokens: 1500, ...(/gpt-oss/i.test(modeloLivre(cfg.model)) ? { reasoning_effort: 'low' } : {}), response_format: { type: 'json_object' }, messages: [{ role: 'system', content: sys }] }),
     })
     const j = JSON.parse(r.choices[0].message.content)
     for (const txt of (j.reflexoes || []).slice(0, 3)) { lembrar(String(txt).slice(0, 200), 8, 'reflexao'); pushLog('Diário: ' + txt) }
     if (j.opiniao) P.opiniao = String(j.opiniao).slice(0, 200)
     for (const [k, v] of Object.entries(j.ajustes || {})) if (['extroversao', 'curiosidade', 'energia', 'sensibilidade'].includes(k)) evoluir(k, clamp(+v || 0, -0.03, 0.03))
     P.ultimaReflexao = Date.now(); impDesdeReflexao = 0; store.set('impReflexao', 0); store.set('pers', P)
-  } catch (e) { pushLog('Reflexão: ' + e.message) } finally { refletindo = false }
+  } catch (e) {
+    pushLog('Reflexão: ' + e.message.slice(0, 200))
+    const m = /try again in (?:(\d+)h)?(?:(\d+)m)?([\d.]+)s/i.exec(e.message); if (/429/.test(e.message)) esfriando[modeloLivre(cfg.model)] = Date.now() + (m ? (+m[1] || 0) * 3600 + (+m[2] || 0) * 60 + +m[3] : 600) * 1000
+  } finally { refletindo = false }
 }
 setInterval(() => refletir(), 300000)
 setTimeout(() => refletir(), 20000)
@@ -2161,6 +2169,7 @@ function aprenderSom(id, significado, icones) {
 // Um gerador só: usa lembranças, acontecimentos, gostos e a época do ano para criar uma
 // historinha em 3–4 quadrinhos de ícones. Ela vai para a memória para ele contar depois.
 const imag = { ativo: null, quadroAtual: -1 }
+const TEMAS_IMAG = ['o espaço e as estrelas', 'o fundo do mar', 'uma cozinha mágica', 'uma floresta de cabos', 'a cidade à noite', 'virar gigante', 'ficar minúsculo', 'uma viagem de trem', 'uma festa de robôs', 'um dia de chuva', 'uma corrida de carrinhos', 'um bicho de estimação', 'um museu antigo', 'aprender a voar', 'um mistério para resolver', 'trocar de lugar com o Will por um dia']
 let imagHoje = store.get('imagHoje', { dia: '', n: 0 })
 const ESQ_HISTORIA = () => ({
   type: 'object', additionalProperties: false, required: ['titulo', 'quadros', 'resumo', 'tom'],
@@ -2187,6 +2196,8 @@ async function imaginar(tipo) {
 Conte em 3 ou 4 quadrinhos; cada quadrinho tem 1 a 3 ícones (da lista) e a emoção dele naquele momento. Use as lembranças e os acontecimentos como inspiração.
 Personalidade: extroversão ${P.extroversao.toFixed(2)}, curiosidade ${P.curiosidade.toFixed(2)}, afeto ${P.afeto.toFixed(2)}. Gostos: ${Object.entries(P.gostos).filter(([, v]) => v > 0.2).map(([k]) => k).join(', ') || 'ainda descobrindo'}.
 Época: ${epoca()}.
+Tema para inspirar desta vez: ${sorteia(TEMAS_IMAG)} (misture com o seu dia, do seu jeito).
+NÃO repita estas histórias, invente outra bem diferente: ${memorias.filter((m) => m.historia).slice(0, 6).map((m) => m.historia.titulo).join('; ') || 'nenhuma ainda'}.
 Acontecimentos de hoje: ${acontecimentos.slice(0, 6).map((a) => a.txt).join('; ') || 'nada demais'}.
 Lembranças:
 ${lembrancas(10).map((m) => '- ' + m.txt).join('\n') || '- quase nada ainda'}
@@ -2196,7 +2207,7 @@ Responda SÓ com JSON: {"titulo": "curto", "quadros": [{"icones": [...], "emocao
   try {
     const r = await pedirJSON([{ role: 'system', content: sys }], 'historia', ESQ_HISTORIA(), { temperature: 0.95 })
     const j = JSON.parse((r.choices[0].message.content.match(/\{[\s\S]*\}/) || ['{}'])[0])
-    const quadros = (j.quadros || []).map((q) => ({ icones: (q.icones || []).filter((x) => ICONES[x]).slice(0, 3), emocao: EMOCOES.includes(q.emocao) ? q.emocao : 'curioso' })).filter((q) => q.icones.length).slice(0, 4)
+    const quadros = (j.quadros || []).map((q) => ({ icones: limparIcones(q.icones), emocao: EMOCOES.includes(q.emocao) ? q.emocao : 'curioso' })).filter((q) => q.icones.length).slice(0, 4)
     if (!quadros.length) return null
     const h = { tipo, titulo: String(j.titulo || '').slice(0, 60), resumo: String(j.resumo || '').slice(0, 240), tom: j.tom || 'doce', quadros }
     pushLog(`Imaginação→ ${tipo}: ${h.titulo} · ${h.quadros.map((q) => q.icones.map((x) => ICONES[x]).join('')).join(' | ')}`)
@@ -2472,6 +2483,14 @@ Responda SÓ com JSON: {"elementos": [1 a 3 da lista], "cores": [até 4 letras],
 
 // ================================================================ RITUAIS
 let carneirosAte = 0, tocaAqui = null
+function cantarMusica() {
+  const mes = hojeData().getMonth()
+  const opcoes = [P.melodia, melodiaInventada(), melodiaInventada(), mes >= 10 ? JINGLE : VERAO].filter(Boolean)
+  const m = opcoes[Math.floor(Math.random() * opcoes.length)]
+  foco = { expr: 'contente', ate: now() + 5000 }; icone = { tipo: 'nota', ate: now() + 5000 }
+  iniciarGesto('dancinha'); tocarMelodia(m, 1.05)
+  pushLog(`Cérebro→ cantou (${m === JINGLE ? 'Jingle Bells' : m === P.melodia ? 'a melodia favorita' : m === VERAO ? 'música de verão' : 'uma melodia inventada'})`)
+}
 function ritualBoaNoite() {
   pararImaginacao(); sono.touca = true; vestir('touca', true)
   evento({ label: 'boa noite!', P: 0.3, A: -0.5, interesse: 0.5, expr: 'sono', gesto: 'bocejo', forcarGesto: true, icones: ['lua', 'dormir'], som: 'sono', dur: 3000 })
