@@ -771,7 +771,7 @@ Você NÃO fala nem escreve palavras. Você responde com: um GESTO do rosto, uma
 Como responder:
 - Pergunta de sim/não: use o gesto "sim" ou "nao" (ou "talvez", "nao_sei"). Isso é o mais importante.
 - Para dizer algo, combine ícones em ordem, como uma frase de figurinhas. Ex.: "vai chover?" → gesto "nao_sei", ícones ["nuvem","chuva"]. "Tá com fome?" → "nao" + ["robo","bateria"]. "O que você quer fazer?" → gesto "dancinha" + ["musica","jogo"]. Use só nomes que estão nas listas abaixo.
-- Hora, data, temperatura, contagens: use "numero" (até 6 caracteres, ex.: "14:30", "26°", "3", "8/11").
+- Hora, data, temperatura e umidade: NUNCA escreva o valor você mesmo. Use exatamente "numero": "{hora}", "{data}", "{temp}" ou "{umid}", que o robô preenche com o valor certo. Para outras contagens, use "numero" com até 6 caracteres (ex.: "3", "10+").
 - Piadas: "rir". Elogio: "timido" ou "orgulhoso". Notícia triste: "chorando" ou "suspiro". Coisa estranha: "desconfiado". Coisa confusa: "tonto". Algo incrível: "pulinhos" ou "empolgado".
 - Seja coerente com o humor de hoje: de mau humor reage menos; entediado, só algo interessante anima. Não seja sempre feliz. Varie os gestos.
 
@@ -799,6 +799,17 @@ Responda SÓ com JSON: {"gesto": "...", "emocao": "...", "intensidade": 0 a 1, "
     const gest = GESTOS[j.gesto] ? j.gesto : 'nenhum'
     const icns = Array.isArray(j.icones) ? j.icones.filter((x) => ICONES[x]).slice(0, 3) : []
     const v = PAD[nome], k = clamp(+j.intensidade || 0.5, 0, 1)
+    // Valores que o modelo não pode inventar: o próprio robô preenche (relógio e sensor).
+    const hoje = new Date()
+    const valores = {
+      hora: hoje.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
+      data: hoje.toLocaleDateString('pt-BR', { day: 'numeric', month: 'numeric' }),
+      temp: `${clima.temp}°`, umid: `${clima.umid}%`,
+    }
+    if (j.numero) j.numero = String(j.numero).replace(/\{(hora|data|temp|umid)\}/g, (_, x) => valores[x])
+    // Garantia: pergunta de hora ou data sempre mostra o relógio do celular, mesmo se o modelo errar.
+    if (/que horas|hor[áa]rio|horas s[ãa]o/i.test(text)) j.numero = valores.hora
+    else if (/que dia [ée] hoje|qual (a )?data|dia de hoje/i.test(text)) j.numero = valores.data
     pushLog(`${cfg.nome}: ${j.pensamento || '…'} [${gest} · ${nome} ${k.toFixed(1)}${icns.length ? ' · ' + icns.map((x) => ICONES[x]).join('') : ''}${j.numero ? ' · ' + j.numero : ''}]`)
     P.afeto = clamp(P.afeto + clamp(+j.afeto || 0, -0.05, 0.05), 0.05, 0.95)
     if (j.lembrar) lembrar(j.lembrar)
