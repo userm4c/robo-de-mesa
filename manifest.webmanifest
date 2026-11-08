@@ -1,0 +1,9 @@
+{
+  "name": "Robô de mesa",
+  "short_name": "Robô",
+  "start_url": "./",
+  "display": "fullscreen",
+  "orientation": "portrait",
+  "background_color": "#000000",
+  "theme_color": "#000000"
+}
