@@ -62,7 +62,7 @@
   <button class="fechar" data-fechar>✕</button><h3>Depuração</h3>
   <div id="stats"></div>
   <label>Temperatura (SHT40 simulado): <span id="tv">26</span> °C</label>
-  <input id="temp" type="range" min="10" max="40" value="26">
+  <input id="temp" type="range" min="5" max="40" value="26">
   <label>Umidade: <span id="hv">55</span> %</label>
   <input id="umid" type="range" min="10" max="95" value="55">
   <div class="row">
@@ -87,6 +87,27 @@
     <button id="tRefletir">Refletir agora</button>
     <button id="tMelodia">Cantarolar</button>
   </div>
+  <label>Imaginação e rituais</label>
+  <div class="row" style="margin-top:0">
+    <button id="tDevanear">Devanear</button>
+    <button id="tContar">Contar história</button>
+    <button id="tSonhar">Sonhar</button>
+    <button id="tPesadelo">Pesadelo</button>
+    <button id="tBoaNoite">Boa noite</button>
+    <button id="tTocaAqui">Toca aqui</button>
+  </div>
+  <label>Emotes pixelados</label>
+  <div class="row" style="margin-top:0">
+    <select id="tEmote" style="flex:1"></select>
+    <button id="tMostrarEmote">Mostrar</button>
+  </div>
+  <label>Datas comemorativas e sons</label>
+  <div class="row" style="margin-top:0">
+    <input id="tData" type="date" style="flex:1;min-width:140px">
+    <button id="tDecorar">Decorar agora</button>
+    <button id="tEsquecerSons" class="danger">Esquecer sons</button>
+  </div>
+  <p class="hint">Data vazia = hoje. Escolha uma data perto de uma festa para testar a decoração. "Susto" lá em cima também grava o barulho: três sustos iguais e ele pergunta o que é.</p>
   <label>Diário</label>
   <div id="diario" class="hint" style="white-space:pre-wrap"></div>
   <label>Log</label>
@@ -116,6 +137,6 @@
 </div>
 
 <video id="cam" playsinline muted hidden></video>
-<script type="module" src="robo.js?v=7"></script>
+<script type="module" src="robo.js?v=8"></script>
 </body>
 </html>

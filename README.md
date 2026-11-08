@@ -21,6 +21,16 @@ Abra https://userm4c.github.io/robo-de-mesa/ no Chrome do Android e toque em "Ac
 - **Conversa (🎤):** grava até 8 s, transcreve e decide a reação pelo Groq (chave em ⚙️, guardada só no celular). Ele sabe a hora, a temperatura e lembra as últimas falas.
 - **Depuração (🐞):** humor, emoção, BPM, tom, personalidade, temperatura e umidade simuladas (SHT40) o log das mensagens S3→C3 e testes de cada gesto, expressão e ícone.
 
+## Fase 2 (08/11)
+
+- **Conversa fluida:** "Ei", "Olha pra mim", "Você está bem?" deixam ele atento ("será comigo?"); um "Sim" confirma e ele responde a frase original. Na conversa não precisa do nome; ele acena quando você pausa, pergunta de volta e espera.
+- **Aprende sons:** guarda a impressão digital do barulho que o assusta; depois de 3 sustos, toca o som (assustando-se consigo mesmo) e pergunta o que é. Com a explicação, perde o medo aos poucos.
+- **Imaginação:** devaneios (sozinho ou entediado), sonhos e pesadelos (fase REM, mais prováveis depois de um dia ruim), guardados para contar depois em quadrinhos de ícones.
+- **Palco pixelado:** 23 emotes de pixel art original que substituem o rosto, com transições (pixel, TV, giro, glitch, deslizar, derreter); acessórios (cachecol, gorro, Papai Noel, óculos, leque, guarda-chuva, touca).
+- **Corpo térmico:** faixas de frio e calor com respostas variadas, palhaçadas conforme a personalidade (Papai Noel + Jingle Bells, modo verão), tela embaçada com umidade alta.
+- **Datas comemorativas:** decora a borda da tela sozinho (Natal, Ano-Novo, Carnaval, Páscoa, Namorados, Festa Junina, Crianças, Halloween, aniversários), pergunta se você gostou, guarda sugestões para a data certa e pesquisa ideias novas (groq/compound).
+- **Rituais:** boa noite (touca, bocejo, carneirinhos), "toca aqui", saudade proporcional ao tempo longe; pede atenção em degraus só quando está muito solitário.
+
 ## O que dá personalidade a ele
 
 - **Necessidades** (como os *drives* do Kismet, do MIT): companhia, novidade e energia, cada uma com uma faixa boa. Fora dela ele fica incomodado e age: chama atenção, pede música, sente saudade, pede espaço quando é atenção demais, fica tonto com coisa demais, cochila.

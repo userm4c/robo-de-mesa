@@ -170,6 +170,7 @@ function evento(e) {
   const fezGesto = e.gesto && e.gesto !== 'nenhum' && GESTOS[e.gesto] && (ganho > 0.45 || e.forcarGesto)
   if (fezGesto) iniciarGesto(e.gesto)
   if (fezGesto && SOM_GESTO[e.gesto]) somGesto(e.gesto)
+  if (e.emote && now() - ultimoEmote > 15000) setTimeout(() => mostrarEmote(e.emote), 250)
   else if (e.som !== false && ganho > 0.45) somDe(e.som || e.expr || nomePAD(emoAtual()), clamp((e.intens ?? 0.6) * ganho, 0.15, 1))
   if (e.lembrar) lembrar(e.label, typeof e.lembrar === 'number' ? e.lembrar : 5)
   bus.emit('emocao', { label: `${e.label} (ganho ${ganho.toFixed(2)})` }, 'Cérebro')
@@ -177,8 +178,14 @@ function evento(e) {
 function emoAtual() { return { P: clamp(humor.P + imp.P, -1, 1), A: clamp(humor.A + imp.A, -1, 1), D: clamp(humor.D + imp.D, -1, 1) } }
 
 let dormindo = false, olhoSonolentoAte = 0
-function acordar() { if (dormindo) { dormindo = false; foco = { expr: 'surpreso', ate: now() + 1200 }; pushLog('Cérebro→ acordou') } }
-function dormir(motivo) { if (!dormindo) { dormindo = true; foco = null; iniciarGesto('suspiro'); somDe('sono', 0.5); pushLog('Cérebro→ dormiu · ' + motivo) } }
+function acordar() {
+  if (!dormindo) return
+  dormindo = false; foco = { expr: 'surpreso', ate: now() + 1200 }; pushLog('Cérebro→ acordou')
+  // o sonho da noite muda o humor do dia: sonho bom acorda bem; pesadelo, ressabiado
+  if (sono.ultimoSonho) { humor.P = clamp(humor.P + (sono.ultimoSonho.tipo === 'pesadelo' ? -0.12 : 0.1), -0.75, 0.9); sono.ultimoSonho = null }
+  sono.touca = false; sono.rem = null
+}
+function dormir(motivo) { if (!dormindo) { pararImaginacao(); dormindo = true; foco = null; iniciarGesto('suspiro'); somDe('sono', 0.5); sono.rem = null; sono.remDur = 180000; sono.proxREM = now() + (ehNoite() ? 20 : 10) * 60000; pushLog('Cérebro→ dormiu · ' + motivo) } }
 // Tem alguém por perto: rosto na câmera ou conversou com ele nos últimos 5 minutos.
 let conversouEm = -1e9
 function temGente() { return pessoa.presente || now() - conversouEm < 300000 }
@@ -238,15 +245,25 @@ const COMPORTAMENTOS = {
     nota: () => (emo.P > 0.25 ? 0.45 : 0) + P.extroversao * 0.25 + (P.melodia ? 0.15 : 0) - (pessoa.presente ? 0 : 0.1),
     fazer: () => { foco = { expr: 'contente', ate: now() + 3500 }; icone = { tipo: 'nota', ate: now() + 3500 }; tocarMelodia(P.melodia && Math.random() < 0.7 ? P.melodia : melodiaInventada(), 1.1) },
   },
-  chamar_atencao: { // carente e você por perto
-    cd: 60000,
-    nota: () => (temGente() && N.social < FAIXA.social[0] ? 0.9 + P.extroversao * 0.4 : 0),
-    fazer: () => evento({ label: 'quero atenção!', P: 0.1, A: 0.4, interesse: 0.5, expr: 'curioso', gesto: 'pulinhos', icones: ['olhos', 'robo'], som: 'curioso', dur: 3500 }),
+  chamar_atencao: { // só quando está muito solitário; pede em degraus (olhar → bipes → pulinhos → emburra)
+    cd: 45000,
+    nota: () => (now() > pedido.emburradoAte && ((temGente() && N.social < 0.18) || (!temGente() && N.social < 0.08)) ? 0.9 + P.extroversao * 0.4 : 0),
+    fazer: () => pedirAtencao(),
   },
-  saudade: { // carente e sozinho
-    cd: 180000,
-    nota: () => (!temGente() && N.social < 0.25 ? 0.7 : 0),
-    fazer: () => evento({ label: 'cadê todo mundo?', P: -0.25, A: -0.1, interesse: 0.4, expr: 'triste', gesto: 'olhar_em_volta', icones: ['pessoa', 'pergunta'], som: 'triste', dur: 3500 }),
+  devanear: { // sozinho ou entediado: imagina uma historinha
+    cd: 15 * 60000,
+    nota: () => (cfg.key && (!temGente() || N.estimulo < 0.35) && papo.estado === 'parado' ? 0.62 + P.curiosidade * 0.3 : 0),
+    fazer: () => devanear(),
+  },
+  decorar: { // perto de uma data comemorativa, decora a tela por conta própria
+    cd: 60000,
+    nota: () => { const d = dataAtiva(); return d && (!P.deco || P.deco.chave !== d.id + d.ano) ? 1.3 : 0 },
+    fazer: () => decorar(),
+  },
+  contar_historia: { // tem história nova e alguém por perto
+    cd: 10 * 60000,
+    nota: () => (temGente() && papo.estado !== 'atento' && Date.now() - (historiaParaContar()?.t || Date.now()) > 120000 ? 0.7 + P.extroversao * 0.2 : 0),
+    fazer: () => contarHistoria(),
   },
   pedir_musica: { // entediado com você por perto
     cd: 300000,
@@ -284,7 +301,7 @@ function escolherComportamento() {
 function tickComportamento() {
   if (dormindo) return
   const t = now()
-  if (t > proxComport && !foco && !gesto && !gravando && !audio.musica && !jogo && !vad.ativo && !vad.verificando) {
+  if (t > proxComport && !foco && !gesto && !gravando && !audio.musica && !jogo && !vad.ativo && !vad.verificando && !palco && !imag.ativo && papo.estado !== 'atento') {
     proxComport = t + rnd(4000, 9000)
     const k = escolherComportamento()
     if (k !== 'nada') { ultimaVez[k] = t; pushLog('Cérebro→ vontade: ' + k); COMPORTAMENTOS[k].fazer() }
@@ -297,19 +314,13 @@ function tickComportamento() {
     if (cara === 'sério' || cara === 'de cara fechada') evento({ label: `você está quieto e ${cara}`, P: -0.1, A: 0.2, interesse: 0.8, expr: 'triste', icones: ['pessoa', 'pergunta', 'abraco'], som: 'curioso', gesto: 'nao_sei', forcarGesto: true, dur: 4000 })
     else if (cara !== 'sorrindo') evento({ label: 'você está quieto do meu lado', P: 0.1, A: 0.35, interesse: 0.8, expr: 'curioso', icone: '?', som: 'curioso', gesto: 'nao_sei', dur: 3500 })
   }
-  // Clima (SHT40 simulado), a cada 2 min.
-  if (t - ultimoClima > 120000) {
-    ultimoClima = t
-    if (clima.temp >= 30) evento({ label: `calor (${clima.temp} °C)`, P: -0.15, A: -0.35, interesse: 0.3, expr: 'calor', icone: 'gota', som: false, dur: 4000 })
-    else if (clima.temp <= 18) evento({ label: `frio (${clima.temp} °C)`, P: -0.2, A: 0.1, interesse: 0.3, expr: 'frio', som: false, dur: 4000 })
-    if (clima.umid <= 30) evento({ label: `ar seco (${clima.umid} %)`, P: -0.1, interesse: 0.3, som: 'tosse', dur: 1500 })
-  }
 }
 
 setInterval(() => { store.set('pers', P); store.set('necess', N); store.set('humor', { dia: humor.dia, P: humor.P, A: humor.A, D: humor.D }) }, 10000)
 
 // ================================================================ C3: ROSTO
-const cv = $('#face'), g = cv.getContext('2d')
+const cv = $('#face'), gTela = cv.getContext('2d')
+let g = gTela // durante um emote, o rosto é desenhado fora da tela e entra com efeito
 g.setTransform(2, 0, 0, 2, 0, 0) // canvas 480 desenhando em 240×240, como a tela de verdade
 
 const BASE = { open: 1, tired: 0, angry: 0, happy: 0, size: 1, mouth: 0, mouthOpen: 0, asym: 0, dy: 0, bochecha: 0, lagrimas: 0, color: [125, 249, 255] }
@@ -332,6 +343,7 @@ const EXPR = {
   orgulhoso: { happy: 0.45, tired: 0.2, mouth: 0.7, dy: -5 },
   desmaiado: { forma: 'x', mouthOpen: 0.3 },
   olho_sonolento: { open: 0.45, tired: 0.5, dy: 6 },
+  pesadelo: { open: 0.12, tired: 0.3, angry: 0.35, mouth: -0.7, dy: 6, color: [150, 160, 255] },
 }
 const cur = structuredClone(BASE)
 cur.bochecha = 0; cur.lagrimas = 0
@@ -360,6 +372,9 @@ const GESTOS = {
 }
 // Antecipação (princípio de animação da Disney): antes de pular, se abaixa um pouquinho.
 GESTOS.pulinhos.antes = { oy: 5, sy: 0.9 }
+GESTOS.tremer = { dur: 1500, f: (t) => ({ ox: Math.sin(t * Math.PI * 34) * 3 * forcaTremor * (1 - t * 0.5), oy: Math.sin(t * Math.PI * 27) * 1.2 * forcaTremor }) }
+GESTOS.aceno = { dur: 520, f: (t) => ({ oy: Math.sin(t * Math.PI) * 5 }) }
+GESTOS.bocejo = { dur: 2000, f: (t) => ({ sy: 1 + Math.sin(t * Math.PI) * 0.07, oy: -Math.sin(t * Math.PI) * 4, forma: t > 0.15 && t < 0.85 ? 'fechado' : null }) }
 GESTOS.sim.antes = { oy: -4 }
 let gesto = null
 function iniciarGesto(nome) { if (GESTOS[nome]) { gesto = { nome, t0: now() }; bus.emit('gesto', { label: nome }, 'Cérebro') } }
@@ -391,7 +406,7 @@ const olhar = { x: 0, y: 0, vx: 0, vy: 0, tx: 0, ty: 0, mx: 0, my: 0, proxSacada
 let piscar = 0, proxPiscar = now() + 3000, balanco = 0, inclinacao = 0
 
 function alvoExpr() {
-  if (dormindo) return now() < olhoSonolentoAte ? 'olho_sonolento' : 'sono'
+  if (dormindo) return now() < olhoSonolentoAte ? 'olho_sonolento' : sono.rem?.tipo === 'pesadelo' ? 'pesadelo' : 'sono'
   if (foco) return foco.expr
   if (audio.musica && P.gostos[audio.estilo] > -0.3) return 'musica'
   return emo.nome
@@ -502,6 +517,9 @@ function quadro() {
   else if (t > olhar.proxSacada) { olhar.proxSacada = t + rnd(1500, 5000) * (emo.nome === 'entediado' ? 1.6 : 1); olhar.tx = rnd(-0.8, 0.8) * (0.5 + P.curiosidade * 0.5); olhar.ty = rnd(-0.4, 0.4) }
   if (audio.melodiaAte > t) olhar.ty = audio.melodiaY
   if (nome === 'pensando') olhar.ty = -0.7
+  if (imag.ativo?.tipo === 'devaneio' && !dormindo) { olhar.tx = 0.55; olhar.ty = -0.65 } // olhando para a nuvem de pensamento
+  if (t < papo.olharAte && !imag.ativo) { olhar.tx = pessoa.presente ? pessoa.x : 0; olhar.ty = pessoa.presente ? pessoa.y * 0.8 : 0.05 } // olhando para você
+  if (dormindo && sono.rem) { olhar.tx = Math.sin(t / 70) * 0.3 + Math.sin(t / 23) * 0.08; olhar.ty = Math.sin(t / 130) * 0.08 } // REM
   if (ge.gx !== undefined) olhar.tx = ge.gx
   if (ge.gy !== undefined) olhar.ty = ge.gy
   const vo = 1 - Math.exp(-dt * 12)
@@ -518,13 +536,16 @@ function quadro() {
   piscar = Math.max(0, piscar - dt * 7)
   const fecha = piscar > 0 ? 1 - Math.sin(piscar * Math.PI) * 0.95 : 1
   balanco *= Math.exp(-dt * 9)
-  const alvoIncl = nome === 'curioso' ? 0.12 : nome === 'musica' ? Math.sin(t / 400) * 0.04 : 0
+  const alvoIncl = papo.estado === 'atento' ? 0.22 : nome === 'curioso' ? 0.12 : nome === 'musica' ? Math.sin(t / 400) * 0.04 : 0
   inclinacao = lerp(inclinacao, alvoIncl, vo)
 
+  g = palco ? gF : gTela
   g.fillStyle = '#000'; g.fillRect(0, 0, 240, 240)
   g.save()
   let ox = olhar.x * 20 + (ge.ox || 0), oy = olhar.y * 14 + cur.dy - balanco * 9 + (ge.oy || 0)
-  if (nome === 'frio') ox += rnd(-1.5, 1.5)
+  const nf = nivelFrio(clima.temp)
+  if (nome === 'frio' || nf >= 2) ox += rnd(-1, 1) * (0.8 + nf * 0.5) // quanto mais frio, mais treme
+  if (dormindo && sono.rem?.tipo === 'pesadelo') ox += rnd(-1.2, 1.2)
   if (dormindo) oy += Math.sin(t / 1200) * 2
   const esc = ge.s || 1
   g.translate(120 + ox, 104 + oy); g.rotate(inclinacao + (ge.rot || 0)); g.scale(esc, esc * (ge.sy || 1)); g.translate(-120, -104)
@@ -554,6 +575,7 @@ function quadro() {
   g.strokeStyle = cor; g.fillStyle = cor; g.lineWidth = 4; g.lineCap = 'round'
   if (cur.mouthOpen > 0.12) { g.beginPath(); g.ellipse(120, 172, 9 + cur.mouthOpen * 4, 3 + cur.mouthOpen * 11, 0, 0, Math.PI * 2); g.fill() }
   else { g.beginPath(); g.moveTo(104, 172); g.quadraticCurveTo(120, 172 + cur.mouth * 14, 136, 172); g.stroke() }
+  desenharAcessorios(t)
   g.restore()
 
   if (dormindo) desenharIcone('zzz', t)
@@ -561,6 +583,16 @@ function quadro() {
   else if (nome === 'musica') desenharIcone('nota', t)
   if (balao && t > balao.ate) balao = null
   if (balao) desenharBalao(t)
+  desenharImaginacao(t)
+  desenharCarneiros(t)
+  if (dormindo && sono.rem?.hist) { // o sonho aparece clarinho perto do Zzz
+    const q = sono.rem.hist.quadros[Math.floor((t - sono.rem.t0) / 4000) % sono.rem.hist.quadros.length]
+    g.save(); g.globalAlpha = 0.45; g.textAlign = 'center'; g.font = '16px "Noto Color Emoji", "Apple Color Emoji", "Segoe UI Emoji", sans-serif'
+    q.icones.forEach((k, i) => g.fillText(ICONES[k], 170 + i * 20, 84)); g.restore()
+  }
+  if (palco) { g = gTela; compor(t) }
+  desenharNevoa(t)
+  desenharMoldura(t)
   if (camera.ligada) { g.fillStyle = '#ff4d4d'; g.beginPath(); g.arc(14, 14, 4, 0, Math.PI * 2); g.fill() } // câmera ligada
   if (!gravando && (vad.ativo || vad.verificando)) { g.fillStyle = vad.verificando ? 'rgba(255,214,102,.9)' : 'rgba(125,249,255,.9)'; g.beginPath(); g.arc(120, 230, 3 + Math.sin(t / 120) * 1, 0, Math.PI * 2); g.fill() }
   if (gravando) { g.fillStyle = '#ff4d4d'; g.font = 'bold 11px system-ui'; g.fillText('● ouvindo', 26, 228) }
@@ -629,6 +661,10 @@ function somDe(emocao, intens = 0.6) {
     case 'amor':
       for (let i = 0; i < 2; i++) { silaba(out, t, base * (1 + i * 0.15), base * (1.4 + i * 0.15), 0.3, 'triangle', 7); t += 0.34 }
       break
+    case 'frio': silaba(out, t, 760, 520, 0.55, 'sine', 16); t += 0.6; break
+    case 'dentes': for (let i = 0; i < 8; i++) { ruido(out, t, 0.025, 2600); t += 0.07 } break
+    case 'hm': silaba(out, t, 380, 640, 0.3, 'sine'); t += 0.32; break
+    case 'calor': silaba(out, t, 620, 380, 0.55, 'sine', 3); t += 0.6; break
     case 'tosse':
       for (let i = 0; i < 2 + (Math.random() < 0.5 ? 1 : 0); i++) { ruido(out, t, 0.12, 900); t += 0.2 }
       break
@@ -770,6 +806,7 @@ function ligarEscuta(src) {
   const PRE = Math.ceil(0.6 * actx.sampleRate / 4096)
   proc.onaudioprocess = (e) => {
     const x = new Float32Array(e.inputBuffer.getChannelData(0)), t = now()
+    anel.push({ t, x }); while (anel.length && t - anel[0].t > 2500) anel.shift() // para lembrar do som de um susto
     let q = 0; for (let i = 0; i < x.length; i++) q += x[i] * x[i]
     const rms = Math.sqrt(q / x.length)
     vad.nivel = Math.max(rms, vad.nivel * 0.85)
@@ -780,12 +817,14 @@ function ligarEscuta(src) {
       if (pode && rms > Math.max(0.006, vad.piso * 3.5)) {
         Object.assign(vad, { ativo: true, ini: t, ultimaFala: t, chunks: vad.pre, pre: [], vozes: 0 })
         prosoReset()
-        if (t < vad.seguirAte) foco = { expr: 'ouvindo', ate: t + 4000 }
+        if (papo.estado !== 'parado') foco = { expr: 'ouvindo', ate: t + 4000 }
       }
       return
     }
     vad.chunks.push(x)
     if (rms > Math.max(0.004, vad.piso * 2)) vad.ultimaFala = t
+    // "uhum": pausa curta no meio da sua frase → ele acena com a cabeça (sem som, para não atrapalhar)
+    if (papo.estado === 'conversando' && t - vad.ultimaFala > 350 && t - vad.ultimaFala < 520 && t - papo.ultimoAceno > 2500 && !gesto) { papo.ultimoAceno = t; gesto = { nome: 'aceno', t0: t } }
     if (gravando || jogo || audio.musica) { vad.ativo = false; vad.chunks = []; return } // começou outra coisa
     if (t - vad.ultimaFala > 1000 || t - vad.ini > 9000) fimDaFrase(t)
   }
@@ -832,7 +871,7 @@ function soltarMelodia(eraFala) {
 }
 async function fimDaFrase(t) {
   vad.ativo = false
-  const chunks = vad.chunks, dur = vad.ultimaFala - vad.ini, resumo = prosoResumo(), seguindo = vad.ini < vad.seguirAte
+  const chunks = vad.chunks, dur = vad.ultimaFala - vad.ini, resumo = prosoResumo()
   vad.chunks = []
   if (dur < 180 || vad.vozes < 2) { setTimeout(() => soltarMelodia(false)); if (dur >= 150) pushLog(`Mãos livres: descartei um som (${(dur / 1000).toFixed(1)} s, ${vad.vozes} trechos com voz)`); return } // barulho, não voz
   vad.hora = vad.hora.filter((x) => t - x < 3600000)
@@ -844,15 +883,23 @@ async function fimDaFrase(t) {
     const texto = await transcrever(paraWav(chunks, actx.sampleRate))
     if (!texto || ALUCINACAO.test(texto) || !/[a-zà-ú]{2}/i.test(texto)) return
     eraFala = true
-    const chamado = chamouPeloNome(texto)
-    if (!chamado && !seguindo) { pushLog(`(ouviu, não era com ele) ${texto.slice(0, 60)}`); return }
-    const vh = humorDaVoz(resumo)
-    if (chamado && !chamado.resto) { // só chamou: ele olha e espera
-      vad.seguirAte = now() + 10000
-      evento({ label: 'me chamou', P: 0.2, A: 0.4, interesse: 0.85, expr: 'curioso', gesto: 'surpresa', forcarGesto: true, icones: ['olhos', 'pergunta'], social: 0.04, dur: 3000 })
-      return
+    const chamado = chamouPeloNome(texto), agora = now(), palavras = texto.split(/\s+/).length
+    const vh = () => humorDaVoz(resumo)
+    if (chamado) { // chamou pelo nome: conversa aberta
+      abrirConversa()
+      if (!chamado.resto) return evento({ label: 'me chamou', P: 0.2, A: 0.4, interesse: 0.85, expr: 'curioso', gesto: 'surpresa', forcarGesto: true, icones: ['olhos', 'pergunta'], social: 0.04, dur: 3000 })
+      return await responder(chamado.resto, vh())
     }
-    await responder(chamado ? chamado.resto : texto, vh)
+    if (papo.estado === 'conversando' && agora < papo.ate) return await responder(texto, vh()) // no meio da conversa, sem nome
+    if (papo.estado === 'atento' && agora < papo.ate) { // ele perguntou "é comigo?"
+      const orig = papo.pendente
+      if (RE_NAO.test(texto) && palavras <= 5) return naoEraComigo('disseram que não')
+      abrirConversa()
+      if (RE_SIM.test(texto) && palavras <= 7) return await responder(orig, vh(), { tipo: 'confirmou', original: orig })
+      return await responder(texto, vh(), { tipo: 'continuou', original: orig })
+    }
+    if ((RE_ATENCAO.test(texto) || (RE_VOCE.test(texto) && texto.length < 70)) && agora - papo.ultimoAtento > 15000) return ficarAtento(texto)
+    pushLog(`(ouviu, não era com ele) ${texto.slice(0, 60)}`)
   } catch (e) { pushLog('Mãos livres: ' + e.message) } finally { vad.verificando = false; soltarMelodia(eraFala) }
 }
 // WAV de 16 kHz (o que o Whisper usa por dentro), com o volume normalizado.
@@ -1109,7 +1156,7 @@ function classificarEstilo() {
 }
 
 // ---------------------------------------------------------------- reações do cérebro ao que o S3 manda
-bus.on('susto', () => evento({ label: 'susto com barulho', P: -0.4, A: 0.9, D: -0.4, interesse: 0.95, expr: 'medo', icone: 'exclamacao', som: 'medo', gesto: 'encolher', tipo: 'susto', confianca: -0.01, dur: 1800 }))
+bus.on('susto', () => { const ts = now(); setTimeout(() => reagirSusto(registrarSom(ts)), 400) }) // reage depois de guardar o som
 bus.on('musica_comecou', () => evento({ label: 'música!', P: 0.3, A: 0.4, interesse: 0.65, expr: 'surpreso', icone: 'nota', som: 'feliz', tipo: 'musica', dur: 1200 }))
 bus.on('estilo', () => {
   const gosto = P.gostos[audio.estilo]
@@ -1289,13 +1336,15 @@ const clima = { temp: 26, umid: 55 }
 const toques = []
 cv.addEventListener('pointerdown', () => {
   if (!actx) return
+  if (tocaAqui) return acertouTocaAqui()
+  atencaoRecebida()
   const t = now(); toques.push(t); while (toques.length && t - toques[0] > 4000) toques.shift()
   if (toques.length > 6) { evento({ label: 'muito cutucão!', P: -0.4, A: 0.5, D: 0.4, interesse: 0.8, expr: 'bravo', icone: 'exclamacao', som: 'bravo', gesto: 'nao', confianca: -0.03, dur: 2000 }); return }
   evento({ label: 'carinho na cabeça', P: 0.5, A: 0.15, interesse: 0.85, expr: Math.random() < 0.35 ? 'timido' : 'amor', icone: 'coracao', som: 'amor', gesto: Math.random() < 0.3 ? 'piscadela' : null, tipo: 'toque', social: 0.06, confianca: 0.005, dur: 2000 })
   P.afeto = clamp(P.afeto + 0.004, 0.05, 0.95)
 })
-$('#temp').oninput = (e) => { clima.temp = +e.target.value; $('#tv').textContent = clima.temp; ultimoClima = 0 }
-$('#umid').oninput = (e) => { clima.umid = +e.target.value; $('#hv').textContent = clima.umid; ultimoClima = 0 }
+$('#temp').oninput = (e) => { clima.temp = +e.target.value; $('#tv').textContent = clima.temp; termo.prox = 0 }
+$('#umid').oninput = (e) => { clima.umid = +e.target.value; $('#hv').textContent = clima.umid; termo.prox = 0 }
 
 // ================================================================ GROQ: conversa
 let gravando = false, rec = null, micStream = null
@@ -1351,30 +1400,36 @@ function erroConversa(err) {
   somDe('triste', 0.4)
 }
 // Formato da resposta preso às listas: o modelo não consegue inventar gesto, emoção ou ícone.
+const ACOES = ['', 'jogo_melodia', 'repetir_som', 'contar_historia', 'boa_noite', 'toca_aqui', 'devanear', 'decorar']
 const ESQUEMA = () => ({
   type: 'object', additionalProperties: false,
-  required: ['gesto', 'emocao', 'intensidade', 'icones', 'numero', 'pensamento', 'afeto', 'lembrar', 'importancia', 'acao'],
+  required: ['gesto', 'emocao', 'intensidade', 'icones', 'numero', 'pensamento', 'afeto', 'lembrar', 'importancia', 'acao', 'emote', 'espera_resposta', 'som_significado', 'opiniao_deco', 'sugestao', 'aniversario_dono'],
   properties: {
     gesto: { type: 'string', enum: [...Object.keys(GESTOS), 'nenhum'] }, emocao: { type: 'string', enum: EMOCOES }, intensidade: { type: 'number' },
     icones: { type: 'array', items: { type: 'string', enum: Object.keys(ICONES) } }, numero: { type: 'string' }, pensamento: { type: 'string' },
-    afeto: { type: 'number' }, lembrar: { type: 'string' }, importancia: { type: 'integer' }, acao: { type: 'string', enum: ['', 'jogo_melodia'] },
+    afeto: { type: 'number' }, lembrar: { type: 'string' }, importancia: { type: 'integer' }, acao: { type: 'string', enum: ACOES },
+    emote: { type: 'string', enum: ['', ...Object.keys(EMOTES)] }, espera_resposta: { type: 'boolean' }, som_significado: { type: 'string' },
+    opiniao_deco: { type: 'string', enum: ['', 'gostou', 'nao_gostou'] }, aniversario_dono: { type: 'string' },
+    sugestao: { type: 'object', additionalProperties: false, required: ['data', 'ideia', 'elementos', 'cores'], properties: { data: { type: 'string', enum: ['', ...DATAS.map((d) => d.id)] }, ideia: { type: 'string' }, elementos: { type: 'array', items: { type: 'string', enum: ELEMENTOS } }, cores: { type: 'array', items: { type: 'string', enum: Object.keys(PALETA) } } } },
   },
 })
-const formatoOk = {} // por modelo: qual formato o Groq aceitou
-async function pedirReacao(messages) {
-  const base = { model: cfg.model, temperature: 0.5, max_completion_tokens: 1000, messages }
+const formatoOk = {} // por modelo e pedido: qual formato o Groq aceitou
+async function pedirJSON(messages, nome, esquema, extra = {}) {
+  const base = { model: cfg.model, temperature: 0.5, max_completion_tokens: 1400, messages, ...extra }
   if (/gpt-oss/i.test(cfg.model)) base.reasoning_effort = 'low'
-  const formatos = [{ type: 'json_schema', json_schema: { name: 'reacao', strict: /gpt-oss/i.test(cfg.model), schema: ESQUEMA() } }, { type: 'json_object' }, null]
+  const formatos = [{ type: 'json_schema', json_schema: { name: nome, strict: /gpt-oss/i.test(cfg.model), schema: esquema } }, { type: 'json_object' }, null]
+  const chave = cfg.model + nome
   let erro
-  for (let i = formatoOk[cfg.model] ?? 0; i < formatos.length; i++) {
+  for (let i = formatoOk[chave] ?? 0; i < formatos.length; i++) {
     try {
       const r = await groq('/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(formatos[i] ? { ...base, response_format: formatos[i] } : base) })
-      formatoOk[cfg.model] = i
+      formatoOk[chave] = i
       return r
     } catch (e) { erro = e; if (!/Groq 400/.test(e.message)) throw e }
   }
   throw erro
 }
+const pedirReacao = (messages) => pedirJSON(messages, 'reacao', ESQUEMA())
 // Só modelos grandes, bons em português e que obedecem o formato.
 const MODELOS_BONS = [/gpt-oss-120b/i, /kimi-k2/i, /llama-4-maverick/i, /llama-3\.3-70b/i, /gpt-oss-20b/i]
 const modeloBom = (id) => MODELOS_BONS.some((re) => re.test(id))
@@ -1383,6 +1438,7 @@ async function conferirModelo() {
   try {
     const { data } = await groq('/models')
     const ids = data.map((m) => m.id)
+    modelosGroq = ids
     if (ids.includes(cfg.model) && modeloBom(cfg.model)) return pushLog(`Modelo de conversa: ${cfg.model}`)
     const melhor = MODELOS_BONS.map((re) => ids.find((i) => re.test(i))).find(Boolean)
     if (!melhor) return
@@ -1400,7 +1456,9 @@ function percepcao(vh) {
   if (luz.escuro) out.push('O quarto está escuro.')
   return out.join(' ')
 }
-async function responder(text, vh) {
+async function responder(text, vh, contexto) {
+  abrirConversa()
+  const ctx = contexto || papo.contexto; papo.contexto = null
   pushLog(`Você: ${text}`)
   legenda(`Você: ${text}`)
   foco = { expr: 'pensando', ate: now() + 15000 }; icone = { tipo: 'reticencias', ate: now() + 15000 }
@@ -1424,6 +1482,12 @@ Como responder:
 - Você gosta muito quando ${cfg.dono} conversa com você e se preocupa com você: isso te acalma e te alegra. Seja carinhoso, brincalhão e curioso; responda ao que foi dito, não só concorde.
 - Se ${cfg.dono} parecer desanimado(a), seja carinhoso; se estiver animado(a), entre na onda.
 - Se ${cfg.dono} quiser jogar o jogo da melodia (ou um jogo de música, de assobiar, de repetir notas), use "acao": "jogo_melodia".
+- Vocês estão numa conversa: ${cfg.dono} não precisa dizer seu nome. Se você fizer uma pergunta de volta e quiser esperar a resposta, use "espera_resposta": true.
+- "emote": em momentos FORTES (rir muito, se apaixonar, chorar, ficar furioso, levar susto, ficar chocado, ganhar presente), troque o rosto por um emote pixelado. No máximo 1 a cada 3 respostas; no resto, "".
+- Outras ações: "repetir_som" (${cfg.dono} quer ouvir o barulho que te assustou), "contar_historia" (quer saber o que você imaginou ou sonhou), "boa_noite" (disse boa noite ou mandou você dormir), "toca_aqui" (bater na mão), "devanear" (pediu para você imaginar algo), "decorar" (pediu para decorar a tela).
+- Se ${cfg.dono} der uma ideia para a decoração da tela (desta data ou de outra data comemorativa), preencha "sugestao" com o id da data, a ideia e, se souber, elementos e cores; senão deixe "sugestao" com tudo vazio.
+- Se ${cfg.dono} disser o dia do aniversário dele(a), preencha "aniversario_dono" com "DD/MM"; senão "".
+${contextoTexto(ctx)}
 
 Agora: ${quando}. Temperatura ${clima.temp} °C, umidade ${clima.umid} %. ${audio.musica ? `Está tocando música ${audio.estilo} (${audio.bpm} BPM).` : ''}
 ${percepcao(vh)}
@@ -1436,12 +1500,16 @@ Humor de hoje: ${nomePAD(humor)}. Emoção agora: ${emo.nome}.
 Acontecimentos recentes: ${acontecimentos.slice(0, 6).map((a) => `${a.txt} (há ${Math.max(1, Math.round((Date.now() - a.t) / 60000))} min)`).join('; ') || 'nada de especial'}.
 Coisas que você lembra:
 ${recentes}
+${estadoVida()}
 
 GESTOS: ${Object.keys(GESTOS).join(', ')}, nenhum
 EMOÇÕES: ${EMOCOES.join(', ')}
 ÍCONES: ${Object.keys(ICONES).join(', ')}
+EMOTES: ${Object.keys(EMOTES).join(', ')}
+DATAS (ids): ${DATAS.map((d) => `${d.id} (${nomeData(d.id)})`).join(', ')}
+ELEMENTOS de decoração: ${ELEMENTOS.join(', ')}. CORES: ${Object.entries(NOME_COR).map(([k, v]) => `${k}=${v}`).join(', ')}
 
-Responda SÓ com JSON: {"gesto": "...", "emocao": "...", "intensidade": 0 a 1, "icones": [até 3 da lista, ou vazio], "numero": "" ou curto, "pensamento": "o que você quis dizer, numa frase curta em português", "afeto": número de -0.05 a 0.05, "lembrar": "frase curta se valer guardar na memória, senão vazio", "importancia": 1 a 10 (1 = banal, 10 = marcante), "acao": "" ou "jogo_melodia"}`
+Responda SÓ com JSON: {"gesto": "...", "emocao": "...", "intensidade": 0 a 1, "icones": [até 3 da lista, ou vazio], "numero": "" ou curto, "pensamento": "o que você quis dizer, numa frase curta em português", "afeto": número de -0.05 a 0.05, "lembrar": "frase curta se valer guardar na memória, senão vazio", "importancia": 1 a 10 (1 = banal, 10 = marcante), "acao": "" ou uma das ações, "emote": "" ou um emote, "espera_resposta": true/false, "som_significado": "", "opiniao_deco": "", "sugestao": {"data": "", "ideia": "", "elementos": [], "cores": []}, "aniversario_dono": ""}`
     const ex = (u, a) => [{ role: 'user', content: `${cfg.dono} disse: "${u}"` }, { role: 'assistant', content: JSON.stringify(a) }]
     const exemplos = [
       ...ex('Você gosta de música?', { gesto: 'sim', emocao: 'empolgado', intensidade: 0.8, icones: ['musica', 'coracao'], numero: '', pensamento: 'Amo! Ainda mais quando é animada.', afeto: 0.01, lembrar: '', importancia: 1 }),
@@ -1452,6 +1520,8 @@ Responda SÓ com JSON: {"gesto": "...", "emocao": "...", "intensidade": 0 a 1, "
       ...ex('Quanto é 2 mais 3?', { gesto: 'sim', emocao: 'orgulhoso', intensidade: 0.6, icones: [], numero: '5', pensamento: 'Essa eu sei: 5!', afeto: 0, lembrar: '', importancia: 1 }),
       ...ex('Quer jogar videogame comigo?', { gesto: 'pulinhos', emocao: 'empolgado', intensidade: 0.9, icones: ['jogo', 'ok'], numero: '', pensamento: 'Bora!!', afeto: 0.02, lembrar: '', importancia: 2 }),
       ...ex('Bora jogar o jogo da melodia?', { gesto: 'pulinhos', emocao: 'empolgado', intensidade: 0.9, icones: ['musica', 'jogo'], numero: '', pensamento: 'Eba! Presta atenção nas notas.', afeto: 0.02, lembrar: '', importancia: 2, acao: 'jogo_melodia' }),
+      ...ex('O que você imaginou hoje?', { gesto: 'pulinhos', emocao: 'empolgado', intensidade: 0.7, icones: ['ideia', 'livro'], numero: '', pensamento: 'Imaginei uma coisa! Olha só.', afeto: 0.01, lembrar: '', importancia: 1, acao: 'contar_historia' }),
+      ...ex('Que barulho foi esse que te assustou?', { gesto: 'nao_sei', emocao: 'medo', intensidade: 0.6, icones: ['olhos', 'pergunta'], numero: '', pensamento: 'Esse aqui, ó… você sabe o que é?', afeto: 0, lembrar: '', importancia: 2, acao: 'repetir_som', espera_resposta: true }),
       ...ex('Você quer dormir?', { gesto: 'nao', emocao: 'feliz', intensidade: 0.5, icones: ['dormir', 'errado'], numero: '', pensamento: 'Ainda não, tô ligadão.', afeto: 0, lembrar: '', importancia: 1 }),
     ].map((m) => ({ ...m, content: m.content.replaceAll('Will', cfg.dono) }))
     conversa.push({ role: 'user', content: `${cfg.dono} disse: "${text}"` })
@@ -1484,14 +1554,47 @@ Responda SÓ com JSON: {"gesto": "...", "emocao": "...", "intensidade": 0 a 1, "
     if (j.lembrar) lembrar(j.lembrar, clamp(Math.round(+j.importancia || 4), 1, 10))
     evoluir('extroversao', 0.003)
     foco = null; icone = null
-    conversaAte = now() + 3000
+    conversaAte = now() + 1500
     conversouEm = now()
     const carinho = 0.1 + P.afeto * 0.15 // atenção de quem ele gosta faz bem
     humor.P = clamp(humor.P + 0.04 * P.afeto, -0.75, 0.9)
     evento({ label: `respondeu a "${text.slice(0, 40)}"`, P: v[0] * k + carinho, A: v[1] * k, D: v[2] * k, interesse: 0.9, social: 0.06, expr: nome, gesto: gest, forcarGesto: true, icones: icns, numero: j.numero, som: nome, intens: k, dur: 4500 })
-    vad.seguirAte = now() + 25000 // dá para continuar a conversa sem chamar de novo
-    if (j.acao === 'jogo_melodia') setTimeout(iniciarJogo, 2600)
+    papo.ate = now() + (j.espera_resposta ? 60000 : 45000) // a conversa continua sem precisar do nome
+    if (j.espera_resposta) setTimeout(() => { if (!palco && !imag.ativo) { foco = { expr: 'curioso', ate: now() + 6000 }; icone = { tipo: '?', ate: now() + 6000 } } }, 4800)
+    if (j.emote && EMOTES[j.emote] && now() - ultimoEmote > 20000) setTimeout(() => mostrarEmote(j.emote), 200)
+    if (ctx?.tipo === 'som') { if (j.som_significado) aprenderSom(ctx.somId, j.som_significado, icns); else if ((ctx.tentativas || 0) < 1) papo.contexto = { ...ctx, tentativas: (ctx.tentativas || 0) + 1 } }
+    if (j.opiniao_deco === 'gostou' || j.opiniao_deco === 'nao_gostou') opiniaoDeco(j.opiniao_deco)
+    if (j.sugestao?.ideia) receberSugestao(j.sugestao)
+    if (/^\d{1,2}\/\d{1,2}$/.test(j.aniversario_dono || '') && P.anivDono !== j.aniversario_dono) { P.anivDono = j.aniversario_dono; lembrar(`O aniversário de ${cfg.dono} é ${j.aniversario_dono}`, 8); store.set('pers', P) }
+    if (ctx?.tipo === 'pesadelo' && v[0] > 0.2) { P.confianca = clamp(P.confianca + 0.02, 0.05, 0.95); lembrar(`${cfg.dono} me consolou depois de um pesadelo`, 7) }
+    const acoes = { jogo_melodia: iniciarJogo, repetir_som: repetirUltimoSom, contar_historia: () => contarHistoria(), boa_noite: ritualBoaNoite, toca_aqui: comecarTocaAqui, devanear: () => devanear(true), decorar: () => decorar(true) }
+    if (acoes[j.acao]) setTimeout(acoes[j.acao], j.acao === 'toca_aqui' ? 2000 : 2600)
+    if (RE_TCHAU.test(text) && j.acao !== 'boa_noite') papo.ate = now() + 4000
   } catch (err) { erroConversa(err) }
+}
+
+// Contexto da conversa (o que acabou de acontecer) e o estado da "vida" dele, para o Groq.
+function contextoTexto(ctx) {
+  const d = cfg.dono
+  if (!ctx) return ''
+  if (ctx.tipo === 'confirmou') return `CONTEXTO: antes, ${d} disse "${ctx.original}"; você ficou na dúvida se era com você, e ${d} confirmou que era. Responda à frase original.`
+  if (ctx.tipo === 'continuou') return `CONTEXTO: antes, ${d} disse "${ctx.original}" para chamar sua atenção e agora continuou falando com você.`
+  if (ctx.tipo === 'som') { const s = sons.find((o) => o.id === ctx.somId); return `CONTEXTO: você acabou de tocar um barulho gravado que sempre te assusta (já assustou ${s?.vezes || 'várias'} vezes) e perguntou a ${d} o que é. Se ${d} explicar, preencha "som_significado" com uma descrição curta (ex.: "a porta do quarto batendo") e escolha ícones que lembrem o som; você fica aliviado. Se não explicar, deixe "som_significado" vazio.` }
+  if (ctx.tipo === 'deco') return `CONTEXTO: você acabou de decorar a borda da tela para ${ctx.nome} com: ${ctx.elementos.join(', ')}, e perguntou se ${d} gostou. Preencha "opiniao_deco" ("gostou" ou "nao_gostou") se der para saber, e "sugestao" se ${d} der uma ideia.`
+  if (ctx.tipo === 'pesadelo') return `CONTEXTO: você acabou de acordar assustado de um pesadelo${ctx.hist ? `: ${ctx.hist.resumo}` : ''}. Se ${d} te consolar, você se acalma.`
+  return ''
+}
+function estadoVida() {
+  const d = dataAtiva(), deco = decoracaoAtual(), out = []
+  if (d) out.push(`Data comemorativa chegando: ${d.nome} (${d.dias >= 0 ? `faltam ${d.dias} dia(s)` : 'é agora'}).${deco ? ` Sua tela está decorada com: ${deco.map((e) => e.el).join(', ')}.` : ''}`)
+  const sugs = (P.sugestoes || []).filter((s) => s.estado !== 'usada').slice(-4)
+  if (sugs.length) out.push(`Ideias de decoração guardadas: ${sugs.map((s) => `${s.ideia} (${nomeData(s.data) || 'sem data'})`).join('; ')}.`)
+  const conhecidos = sons.filter((s) => s.significado).map((s) => s.significado)
+  out.push(`Barulhos que você já entende: ${conhecidos.join('; ') || 'nenhum'}.${sons.some((s) => !s.significado && s.vezes >= 2) ? ' Tem um barulho que te assusta e você não sabe o que é.' : ''}`)
+  const hist = memorias.filter((m) => m.historia).slice(0, 3)
+  if (hist.length) out.push(`Histórias suas (devaneios e sonhos), para contar se pedirem: ${hist.map((m) => `${m.historia.tipo}: ${m.historia.titulo} — ${m.historia.resumo}`).join(' | ')}.`)
+  const vest = Object.keys(vestido); if (vest.length) out.push(`Você está usando: ${vest.join(', ')}.`)
+  return out.join('\n')
 }
 
 function legenda(txt) {
@@ -1532,6 +1635,830 @@ Mude pouco e só com motivo nas lembranças. Personalidade muda devagar.`
 }
 setInterval(() => refletir(), 300000)
 setTimeout(() => refletir(), 20000)
+
+// ================================================================ C3: PALCO (emotes, acessórios, moldura)
+// Pixel art original, escrita como texto: cada letra é uma cor. No robô de verdade, o mesmo
+// desenho vira um vetor RGB565 na flash do C3.
+const PALETA = { k: '#141018', q: '#2d3142', w: '#ffffff', y: '#ffd23f', o: '#ff9f1c', r: '#ff3b3b', d: '#a4161a', p: '#ff7eb6', b: '#3a86ff', c: '#7df9ff', a: '#a0e7ff', g: '#3ddc84', e: '#1b7f3b', n: '#8d5524', s: '#9aa5b1', l: '#d9e2ec', v: '#9b5de5', m: '#ffe5b4' }
+const NOME_COR = { k: 'preto', q: 'grafite', w: 'branco', y: 'amarelo', o: 'laranja', r: 'vermelho', d: 'vinho', p: 'rosa', b: 'azul', c: 'ciano', a: 'azul-claro', g: 'verde', e: 'verde-escuro', n: 'marrom', s: 'cinza', l: 'cinza-claro', v: 'roxo', m: 'bege' }
+const CARA = [
+  '.....kkkkkk.....', '...kkyyyyyykk...', '..kyyyyyyyyyyk..', '.kyyyyyyyyyyyyk.', '.kyyyyyyyyyyyyk.', 'kyyyyyyyyyyyyyyk', 'kyyyyyyyyyyyyyyk', 'kyyyyyyyyyyyyyyk',
+  'kyyyyyyyyyyyyyyk', 'kyyyyyyyyyyyyyyk', 'kyyyyyyyyyyyyyyk', '.kyyyyyyyyyyyyk.', '.kyyyyyyyyyyyyk.', '..kyyyyyyyyyyk..', '...kkyyyyyykk...', '.....kkkkkk.....',
+]
+// Pinta pontos por cima de um desenho base (e troca cores, se pedir).
+function pinta(base, pontos = [], troca = {}) {
+  const px = base.map((l) => [...l].map((ch) => troca[ch] || ch))
+  for (const [r, c, s] of pontos) for (let i = 0; i < s.length; i++) if (s[i] !== '.' && px[r] && c + i < px[r].length) px[r][c + i] = s[i]
+  return px.map((l) => l.join(''))
+}
+const lagrimas = [7, 8, 9, 10, 11, 12, 13].flatMap((r) => [[r, 3, 'b'], [r, 12, 'b']])
+const EMOTES = {
+  rindo: { anim: 'quicar', som: 'feliz', px: pinta(CARA, [[5, 4, 'k'], [6, 5, 'k'], [7, 4, 'k'], [5, 11, 'k'], [6, 10, 'k'], [7, 11, 'k'], [9, 3, 'kkkkkkkkkk'], [10, 3, 'kwwwwwwwwk'], [11, 4, 'krrrrrrk'], [12, 5, 'kkkkkk'], [6, 2, 'c'], [7, 1, 'c'], [8, 1, 'c'], [6, 13, 'c'], [7, 14, 'c'], [8, 14, 'c']]) },
+  apaixonado: { anim: 'pulsar', som: 'amor', px: pinta(CARA, [[4, 2, 'rr.rr'], [5, 2, 'rrrrr'], [6, 3, 'rrr'], [7, 4, 'r'], [4, 9, 'rr.rr'], [5, 9, 'rrrrr'], [6, 10, 'rrr'], [7, 11, 'r'], [9, 2, 'pp'], [9, 12, 'pp'], [10, 4, 'k'], [10, 11, 'k'], [11, 5, 'kkkkkk']]) },
+  chorando: { anim: 'tremer', som: 'triste', px: pinta(CARA, [[6, 3, 'kkk'], [6, 10, 'kkk'], [10, 5, 'kkkkkk'], [11, 4, 'k'], [11, 11, 'k'], ...lagrimas]) },
+  bravo: { anim: 'tremer', som: 'bravo', px: pinta(CARA, [[4, 3, 'kk'], [5, 5, 'kk'], [5, 9, 'kk'], [4, 11, 'kk'], [6, 4, 'kk'], [7, 4, 'kk'], [6, 10, 'kk'], [7, 10, 'kk'], [10, 4, 'k'], [10, 11, 'k'], [11, 5, 'kkkkkk'], [2, 10, 'y.y'], [3, 11, 'y']], { y: 'r' }) },
+  surpreso: { anim: 'pop', som: 'surpreso', px: pinta(CARA, [[3, 4, 'kk'], [3, 10, 'kk'], [5, 4, 'kk'], [6, 4, 'kk'], [5, 10, 'kk'], [6, 10, 'kk'], [9, 7, 'kk'], [10, 6, 'kkkk'], [11, 6, 'kkkk'], [12, 7, 'kk']]) },
+  legal: { anim: 'balancar', som: 'contente', px: pinta(CARA, [[5, 2, 'qqqqqqqqqqqq'], [6, 3, 'qqqq'], [6, 9, 'qqqq'], [7, 4, 'qq'], [7, 10, 'qq'], [6, 4, 'w'], [6, 10, 'w'], [10, 10, 'k'], [11, 5, 'kkkkk']]) },
+  tonto: { anim: 'girar', som: 'curioso', px: pinta(CARA, [[5, 4, 'k.k'], [6, 5, 'k'], [7, 4, 'k.k'], [5, 9, 'k.k'], [6, 10, 'k'], [7, 9, 'k.k'], [10, 4, 'k.k.k.k'], [11, 5, 'k.k.k']]) },
+  sono: { anim: 'flutuar', som: 'sono', px: pinta(CARA, [[6, 3, 'kkk'], [6, 10, 'kkk'], [10, 7, 'kk'], [11, 7, 'kk']]) },
+  frio: { anim: 'tremer', som: 'frio', px: pinta(CARA, [[5, 4, 'kk'], [6, 4, 'kk'], [5, 10, 'kk'], [6, 10, 'kk'], [8, 7, 'rr'], [9, 4, 'kkkkkkkk'], [10, 4, 'kwkwkwkk'], [11, 4, 'kkkkkkkk']], { y: 'a' }) },
+  calor: { anim: 'flutuar', som: 'calor', px: pinta(CARA, [[6, 3, 'kkk'], [6, 10, 'kkk'], [7, 4, 'k'], [7, 11, 'k'], [10, 5, 'kkkkkk'], [11, 6, 'pp'], [12, 6, 'pp'], [2, 12, 'c'], [3, 12, 'c'], [3, 13, 'c']], { y: 'o' }) },
+  assustado: { anim: 'tremer', som: 'medo', px: pinta(CARA, [[4, 3, 'www'], [5, 3, 'wkw'], [6, 3, 'www'], [4, 10, 'www'], [5, 10, 'wkw'], [6, 10, 'www'], [10, 4, 'k.k.k.k'], [11, 5, 'k.k.k'], [2, 2, 'c'], [3, 1, 'c']], { y: 'l' }) },
+  coracao: { anim: 'pulsar', som: 'amor', px: ['................', '..kkkk....kkkk..', '.krrrrk..krrrrk.', 'krrwrrrkkrrrrrrk', 'krwrrrrrrrrrrrrk', 'krrrrrrrrrrrrrrk', 'krrrrrrrrrrrrrrk', '.krrrrrrrrrrrrk.', '..krrrrrrrrrrk..', '...krrrrrrrrk...', '....krrrrrrk....', '.....krrrrk.....', '......krrk......', '.......kk.......', '................', '................'] },
+  estrela: { anim: 'girar', som: 'feliz', px: ['.......kk.......', '......kyyk......', '......kyyk......', '.....kyyyyk.....', 'kkkkkkyyyykkkkkk', 'kyyyyyyyyyyyyyyk', '.kyyyykyykyyyyk.', '..kyyyyyyyyyyk..', '...kyyyyyyyyk...', '...kyyyyyyyyk...', '..kyyyykkyyyyk..', '..kyyyk..kyyyk..', '.kyyyk....kyyyk.', '.kyyk......kyyk.', '.kkk........kkk.', '................'] },
+  interrogacao: { anim: 'balancar', som: 'curioso', px: ['....kkkkkkkk....', '...kcccccccck...', '..kcccckkcccck..', '..kcck....kcck..', '...kk.....kcck..', '..........kcck..', '.........kcck...', '.......kkcck....', '......kccck.....', '......kcck......', '......kcck......', '......kkkk......', '................', '......kkkk......', '......kcck......', '......kkkk......'] },
+  exclamacao: { anim: 'pop', som: 'surpreso', px: ['......kkkk......', '......kyyk......', '......kyyk......', '......kyyk......', '......kyyk......', '......kyyk......', '......kyyk......', '......kyyk......', '......kyyk......', '.......kk.......', '................', '......kkkk......', '......kyyk......', '......kkkk......', '................', '................'] },
+  fogo: { anim: 'tremer', som: 'bravo', px: ['.......k........', '......kok.......', '......korok.....', '.....korrok.....', '....korrrok..k..', '...korryyrrok...', '..korryyyyrrok..', '..koryyyyyyrok..', '.korryywwyyrrok.', '.koryywwwwyyrok.', '.koryywwwwyyrok.', '.korryywwyyrrok.', '..korryyyyrrok..', '...korrrrrrok...', '.....kkkkkk.....', '................'] },
+  gelo: { anim: 'tremer', som: 'frio', px: ['................', '..kkkkkkkkkkkk..', '..kwaaaaaaaaak..', '..kwaaaaaaaaak..', '..kaaaaaaaaaak..', '..kaakaaaakaak..', '..kaakaaaakaak..', '..kaaaaaaaaaak..', '..kaaakkkkaaak..', '..kaaaaaaaaaak..', '..kaaaaaaaaaak..', '..kkkkkkkkkkkk..', '...c..c...c.....', '.......c........', '................', '................'] },
+  nota: { anim: 'balancar', som: 'musica', px: ['........kk......', '........kck.....', '........kcck....', '........kccck...', '........kckcck..', '........kck.kck.', '........kck..kk.', '........kck.....', '........kck.....', '.....kkkkck.....', '....kcccccck....', '...kcccccccck...', '...kcccccccck...', '....kcccccck....', '.....kkkkkk.....', '................'] },
+  fantasma: { anim: 'flutuar', som: 'medo', px: ['.....kkkkkk.....', '...kkwwwwwwkk...', '..kwwwwwwwwwwk..', '.kwwwwwwwwwwwwk.', '.kwwkkwwwwkkwwk.', '.kwwkkwwwwkkwwk.', '.kwwwwwwwwwwwwk.', '.kwwwwwkkwwwwwk.', '.kwwwwkllkwwwwk.', '.kwwwwwkkwwwwwk.', '.kwwwwwwwwwwwwk.', '.kwwwwwwwwwwwwk.', '.kwwwwwwwwwwwwk.', '.kwwkkwwkkwwkkk.', '.kk..kk..kk..k..', '................'] },
+  presente: { anim: 'quicar', som: 'feliz', px: ['....kk....kk....', '...krrk..krrk...', '....krrkkrrk....', '.kkkkkkkkkkkkkk.', '.kbbbbbrrbbbbbk.', '.kbbbbbrrbbbbbk.', '.kkkkkkkkkkkkkk.', '..kbbbbrrbbbbk..', '..kbbbbrrbbbbk..', '..kbbbbrrbbbbk..', '..kbbbbrrbbbbk..', '..kbbbbrrbbbbk..', '..kbbbbrrbbbbk..', '..kkkkkkkkkkkk..', '................', '................'] },
+  lua: { anim: 'flutuar', som: 'sono', px: ['.....kkkkk......', '...kkyyyk.......', '..kyyyk.........', '.kyyyk..........', '.kyyk...........', 'kyyyk...........', 'kyyyk...........', 'kyyyk...........', 'kyyyyk..........', '.kyyyyk.......k.', '.kyyyyykk...kyk.', '..kyyyyyykkkyk..', '...kkyyyyyyyk...', '.....kkkkkkk....', '................', '................'] },
+}
+EMOTES.coracao_partido = { anim: 'cair', som: 'triste', px: pinta(EMOTES.coracao.px, [[3, 8, 'k'], [4, 7, 'k'], [5, 8, 'k'], [6, 7, 'k'], [7, 8, 'k'], [8, 7, 'k'], [9, 8, 'k'], [10, 7, 'k']]) }
+
+// Acessórios: desenhados por cima do rosto e acompanham os movimentos dele.
+const GORRO = ['.......kk.......', '......kwwk......', '....kkkkkkkk....', '..kkbbbbbbbbkk..', '.kbbbbbbbbbbbbk.', 'kbbbbbbbbbbbbbbk', 'kwwwwwwwwwwwwwwk', 'kkkkkkkkkkkkkkkk']
+const ACESS = {
+  cachecol: { x: 120, y: 216, e: 8, px: ['kkkkkkkkkkkkkkkkkkkkkkkk', 'krrwwrrwwrrwwrrwwrrwwrrk', 'kkkkkkkkkkkkkkkkkkkkkkkk', '................krwk....', '................kwrk....', '................krwk....', '................kkkk....'] },
+  gorro: { x: 120, y: 32, e: 10, px: GORRO },
+  touca: { x: 120, y: 32, e: 10, px: pinta(GORRO, [], { b: 'v' }) },
+  noel: { x: 120, y: 34, e: 10, px: ['............kk..', '...........kwwk.', '.........kkrkwwk', '.......kkrrrrkk.', '.....kkrrrrrrk..', '...kkrrrrrrrrk..', '..krrrrrrrrrrrk.', 'kwwwwwwwwwwwwwwk', 'kkkkkkkkkkkkkkkk'] },
+  oculos: { x: 120, y: 100, e: 8, px: ['ssssssssssssssssssssss', '.qqqwqqqq....qqqwqqqq.', '..qqqqqq......qqqqqq..', '...qqqq........qqqq...'] },
+  nariz: { x: 120, y: 142, e: 4, px: ['.kk.', 'krrk', 'krrk', '.kk.'] },
+  lingua: { x: 120, y: 186, e: 5, px: ['kppk', 'kppk', '.kk.'] },
+  leque: { x: 214, y: 150, e: 4, anim: 'abanar', px: ['p.p.p.p.p', 'ppppppppp', '.ppppppp.', '..ppppp..', '...ppp...', '....n....', '....n....'] },
+  guarda_chuva: { x: 120, y: 22, e: 11, px: ['......kkkk......', '....kkbbbbkk....', '..kkbbbbbbbbkk..', '.kbbbbbbbbbbbbk.', 'kbbbbbbbbbbbbbbk', 'kkkkkkkkkkkkkkkk'] },
+}
+const CARNEIRO = ['.wwwww....', 'wwwwwwwkk.', 'wwwwwwwkkk', 'wwwwwwwkk.', '.wwwwww...', '.k.k..k.k.', '.k.k..k.k.']
+
+const gEscala = (px, e) => [px[0].length * e, px.length * e]
+function desenharSprite(px, cx, cy, e, troca = null, alpha = 1) {
+  const h = px.length, w = px[0].length
+  g.save(); g.globalAlpha *= alpha
+  for (let r = 0; r < h; r++) for (let c = 0; c < w; c++) {
+    let ch = px[r][c]; if (ch === '.') continue
+    if (troca && troca[ch]) ch = troca[ch]
+    g.fillStyle = PALETA[ch] || ch
+    g.fillRect(cx + (c - w / 2) * e, cy + (r - h / 2) * e, e + 0.4, e + 0.4)
+  }
+  g.restore()
+}
+
+// Emote: o rosto sai com um efeito, o emote aparece animado e o rosto volta com outro efeito.
+let palco = null
+const SAIDAS = ['pixel', 'tv', 'giro', 'glitch', 'deslizar']
+const sorteia = (l) => l[Math.floor(Math.random() * l.length)]
+let ultimoEmote = -1e9
+function mostrarEmote(nome, dur = 1900, op = {}) {
+  if (!EMOTES[nome] || palco || dormindo) return false
+  palco = { emote: nome, t0: now(), dur, saida: op.saida || sorteia(SAIDAS), volta: op.volta || sorteia(SAIDAS), lado: Math.random() < 0.5 ? -1 : 1 }
+  ultimoEmote = now()
+  setTimeout(() => somDe(EMOTES[nome].som, 0.6), 330)
+  bus.emit('emote', { label: `${nome} (${palco.saida} → ${palco.volta})` }, 'C3')
+  return true
+}
+const cvF = document.createElement('canvas'); cvF.width = cvF.height = 480
+const gF = cvF.getContext('2d'); gF.setTransform(2, 0, 0, 2, 0, 0)
+const cvP = document.createElement('canvas'), gP = cvP.getContext('2d')
+function compor(t) {
+  const k = t - palco.t0, S = 340, V = 420, E = palco.dur
+  g.fillStyle = '#000'; g.fillRect(0, 0, 240, 240)
+  if (k < S) efeito(palco.saida, k / S)
+  else if (k < S + E) desenharEmote(palco.emote, k - S, E)
+  else if (k < S + E + V) efeito(palco.volta, 1 - (k - S - E) / V)
+  else { efeito('pixel', 0); palco = null }
+}
+// p = 0: rosto inteiro; p = 1: rosto sumiu.
+function efeito(tipo, p) {
+  p = clamp(p, 0, 1)
+  g.save()
+  if (tipo === 'pixel') {
+    const n = Math.max(6, Math.round(240 * Math.pow(1 - p, 2.2)))
+    cvP.width = cvP.height = n; gP.imageSmoothingEnabled = true; gP.drawImage(cvF, 0, 0, n, n)
+    g.imageSmoothingEnabled = false; g.globalAlpha = 1 - p * p; g.drawImage(cvP, 0, 0, 240, 240); g.imageSmoothingEnabled = true
+  } else if (tipo === 'tv') {
+    if (p < 0.7) { const sy = Math.max(0.02, 1 - p / 0.7); g.translate(0, 120 * (1 - sy)); g.scale(1, sy); g.drawImage(cvF, 0, 0, 240, 240) }
+    else { const sx = 1 - (p - 0.7) / 0.3; g.fillStyle = '#e8f6ff'; g.fillRect(120 - 120 * sx, 119, 240 * sx, 2) }
+  } else if (tipo === 'giro') {
+    g.translate(120, 120); g.rotate(p * Math.PI * 2); g.scale(1 - p, 1 - p); g.translate(-120, -120); g.drawImage(cvF, 0, 0, 240, 240)
+  } else if (tipo === 'glitch') {
+    for (let y = 0; y < 240; y += 12) {
+      const dx = (Math.random() - 0.5) * p * 90
+      g.globalAlpha = 1 - p * 0.9; g.drawImage(cvF, 0, y * 2, 480, 24, dx, y, 240, 12)
+      if (Math.random() < p) { g.globalCompositeOperation = 'lighter'; g.globalAlpha = 0.3; g.drawImage(cvF, 0, y * 2, 480, 24, dx + 4, y, 240, 12); g.globalCompositeOperation = 'source-over' }
+    }
+  } else if (tipo === 'derreter') {
+    for (let x = 0; x < 240; x += 6) {
+      const queda = p * (60 + ((x * 37) % 23) * 6)
+      g.globalAlpha = 1 - p * 0.8; g.drawImage(cvF, x * 2, 0, 12, 480, x, queda, 6, 240)
+    }
+  } else { // deslizar
+    g.translate((palco?.lado || 1) * p * 260, 0); g.drawImage(cvF, 0, 0, 240, 240)
+  }
+  g.restore()
+}
+function desenharEmote(nome, k, E) {
+  const em = EMOTES[nome]
+  const ent = clamp(k / 240, 0, 1), sai = clamp((E - k) / 220, 0, 1)
+  const pop = ent < 1 ? 1 + 2.7 * Math.pow(ent - 1, 3) + 1.7 * Math.pow(ent - 1, 2) : 1
+  let s = 9 * pop * (sai < 1 ? sai : 1), x = 120, y = 122, rot = 0
+  if (em.anim === 'pulsar') s *= 1 + 0.08 * Math.sin(k / 110)
+  if (em.anim === 'quicar') y -= Math.abs(Math.sin(k / 170)) * 16
+  if (em.anim === 'tremer') { x += rnd(-2.5, 2.5); y += rnd(-1.5, 1.5) }
+  if (em.anim === 'girar') rot = Math.sin(k / 300) * 0.5
+  if (em.anim === 'balancar') rot = Math.sin(k / 250) * 0.2
+  if (em.anim === 'flutuar') y += Math.sin(k / 380) * 7
+  if (em.anim === 'cair' && k > E * 0.5) { y += Math.pow((k - E * 0.5) / (E * 0.5), 2) * 40; rot = (k - E * 0.5) / E * 0.6 }
+  g.save(); g.translate(x, y); g.rotate(rot)
+  desenharSprite(em.px, 0, 0, Math.max(0.5, s))
+  g.restore()
+  // brilhinhos de pixel em volta
+  g.fillStyle = '#e8f6ff'
+  for (let i = 0; i < 6; i++) { const a = i / 6 * Math.PI * 2 + k / 700, r = 92 + Math.sin(k / 160 + i) * 6; g.globalAlpha = 0.5 + 0.5 * Math.sin(k / 120 + i * 2); g.fillRect(120 + Math.cos(a) * r - 2, 122 + Math.sin(a) * r - 2, 4, 4) }
+  g.globalAlpha = 1
+}
+
+// Acessórios vestidos agora (nome → desde quando).
+const vestido = {}
+function vestir(nome, sim) {
+  if (sim && !vestido[nome]) { vestido[nome] = now(); pushLog('C3→ vestiu ' + nome) }
+  else if (!sim && vestido[nome]) { delete vestido[nome]; pushLog('C3→ tirou ' + nome) }
+}
+function desenharAcessorios(t) {
+  for (const nome of ['cachecol', 'nariz', 'lingua', 'oculos', 'gorro', 'touca', 'noel', 'guarda_chuva', 'leque']) {
+    if (!vestido[nome]) continue
+    const a = ACESS[nome], ent = clamp((t - vestido[nome]) / 400, 0, 1)
+    g.save(); g.translate(a.x, a.y - (1 - ent) * 30); g.globalAlpha = ent
+    if (a.anim === 'abanar') { g.translate(0, 14); g.rotate(Math.sin(t / 90) * 0.45); g.translate(0, -14) }
+    desenharSprite(a.px, 0, 0, a.e)
+    g.restore()
+  }
+}
+
+// ---------------------------------------------------------------- moldura decorada (datas comemorativas)
+const ELEMENTOS = ['luzes', 'neve', 'bandeirinhas', 'confete', 'serpentina', 'fogos', 'aboboras', 'fantasmas', 'coracoes', 'baloes', 'estrelas', 'fogueira', 'ovos', 'flores']
+const MINI = {
+  abobora: ['...ee...', '.oooooo.', 'ookookoo', 'oooooooo', 'okkkkkko', '.oooooo.'],
+  fantasminha: ['..wwww..', '.wwwwww.', 'wwkwwkww', 'wwwwwwww', 'wwwkkwww', 'wwwwwwww', 'w.ww.ww.'],
+  coracao: ['.rr.rr.', 'rrrrrrr', 'rrrrrrr', '.rrrrr.', '..rrr..', '...r...'],
+  balao: ['.rrrr.', 'rrwrrr', 'rrrrrr', 'rrrrrr', '.rrrr.', '..rr..', '...s..', '..s...', '...s..'],
+  estrela: ['..y..', '.yyy.', 'yyyyy', '.yyy.', '..y..'],
+  fogueira: ['...r....', '..ror...', '.royor..', '.royyor.', 'rooyyoor', '.nnnnnn.', 'nn.nn.nn'],
+  ovo: ['.ppp.', 'ppppp', 'yyyyy', 'ppppp', 'bbbbb', 'ppppp', '.ppp.'],
+  flor: ['.p.p.', 'ppypp', '.p.p.', '..g..', '.gg..'],
+}
+const cor = (cs, i, padrao) => { const l = cs?.length ? cs : padrao; return PALETA[l[i % l.length]] }
+const tr = (cs, i, de) => (cs?.length ? { [de]: cs[i % cs.length] } : null)
+function perimetro(passo) {
+  const p = []
+  for (let x = 8; x <= 232; x += passo) p.push([x, 7], [x, 233])
+  for (let y = 8 + passo; y <= 232 - passo; y += passo) p.push([7, y], [233, y])
+  return p
+}
+const naBorda = (x, y) => x < 28 || x > 212 || y < 26 || y > 214
+const MOLDURA = {
+  luzes(t, cs) {
+    g.strokeStyle = '#2f5d3a'; g.lineWidth = 1.5; g.strokeRect(7, 7, 226, 226)
+    perimetro(20).forEach(([x, y], i) => {
+      const acesa = (Math.floor(t / 450) + i) % 3 !== 0
+      g.fillStyle = cor(cs, i, ['r', 'y', 'g', 'b', 'p']); g.globalAlpha = decoAlpha * (acesa ? 1 : 0.25)
+      g.fillRect(x - 3, y - 3, 6, 7); if (acesa) { g.globalAlpha = decoAlpha * 0.25; g.fillRect(x - 6, y - 6, 12, 13) }
+    })
+    g.globalAlpha = decoAlpha
+  },
+  neve(t, cs) {
+    g.fillStyle = cor(cs, 0, ['w'])
+    for (let i = 0; i < 46; i++) {
+      const x = (i * 53 + Math.sin(t / 900 + i) * 8 + 240) % 240, y = (t / 45 * (0.4 + (i % 5) / 6) + i * 37) % 240
+      if (naBorda(x, y)) g.fillRect(x, y, i % 3 ? 2 : 3, i % 3 ? 2 : 3)
+    }
+    for (let x = 0; x < 240; x += 4) g.fillRect(x, 236 - Math.abs(Math.sin(x / 17)) * 3, 4, 6)
+  },
+  bandeirinhas(t, cs) {
+    g.strokeStyle = '#d9e2ec'; g.lineWidth = 1; g.beginPath()
+    for (let x = 0; x <= 240; x += 4) g.lineTo(x, 9 + 7 * Math.sin(Math.PI * x / 240)); g.stroke()
+    for (let i = 0, x = 6; x < 236; x += 17, i++) {
+      const y = 9 + 7 * Math.sin(Math.PI * x / 240), bal = Math.sin(t / 400 + i) * 1.5
+      g.fillStyle = cor(cs, i, ['r', 'y', 'b', 'g', 'p', 'o'])
+      for (let r = 0; r < 5; r++) g.fillRect(x + r * 1.2 + bal, y + r * 3, 12 - r * 2.4, 3)
+    }
+  },
+  confete(t, cs) {
+    for (let i = 0; i < 44; i++) {
+      const x = (i * 71 + Math.sin(t / 500 + i) * 10 + 240) % 240, y = (t / 30 * (0.5 + (i % 4) / 5) + i * 29) % 240
+      if (!naBorda(x, y)) continue
+      g.fillStyle = cor(cs, i, ['r', 'y', 'b', 'g', 'p', 'v']); const gira = Math.abs(Math.sin(t / 150 + i))
+      g.fillRect(x, y, 4 * gira + 1, 4)
+    }
+  },
+  serpentina(t, cs) {
+    for (const [lado, i] of [[0, 0], [1, 1]]) {
+      g.fillStyle = cor(cs, i, ['y', 'p', 'c'])
+      for (let y = 0; y < 240; y += 3) { const x = (lado ? 228 : 8) + Math.sin(y / 12 + t / 500 + i) * 6; g.fillRect(x, y, 3, 3) }
+    }
+  },
+  fogos(t, cs) {
+    for (let j = 0; j < 2; j++) {
+      const ciclo = Math.floor((t + j * 800) / 1700), fase = ((t + j * 800) % 1700) / 1700
+      const x = 30 + ((ciclo * 97 + j * 131) % 180), y = 24 + ((ciclo * 53 + j * 31) % 28)
+      g.fillStyle = cor(cs, ciclo + j, ['y', 'r', 'c', 'p', 'g']); g.globalAlpha = decoAlpha * (1 - fase)
+      for (let i = 0; i < 10; i++) { const a = i / 10 * Math.PI * 2; g.fillRect(x + Math.cos(a) * fase * 22 - 1.5, y + Math.sin(a) * fase * 22 - 1.5, 3, 3) }
+    }
+    g.globalAlpha = decoAlpha
+  },
+  aboboras(t, cs) { [[18, 222], [222, 222], [18, 20], [222, 20]].forEach(([x, y], i) => desenharSprite(MINI.abobora, x, y + Math.sin(t / 600 + i) * 1.5, 3, tr(cs, i, 'o'))) },
+  fantasmas(t, cs) { [[22, 200], [218, 205]].forEach(([x, y], i) => desenharSprite(MINI.fantasminha, x + Math.sin(t / 700 + i) * 4, y + Math.sin(t / 450 + i * 2) * 6, 3, tr(cs, i, 'w'), 0.85)) },
+  coracoes(t, cs) {
+    for (let i = 0; i < 8; i++) { const x = i % 2 ? 222 - (i % 3) * 6 : 16 + (i % 3) * 6, y = 240 - ((t / 35 + i * 40) % 260); desenharSprite(MINI.coracao, x, y, 2, tr(cs, i, 'r'), 0.9) }
+  },
+  baloes(t, cs) { [[18, 205], [36, 214], [204, 212], [222, 202]].forEach(([x, y], i) => desenharSprite(MINI.balao, x + Math.sin(t / 800 + i) * 3, y + Math.sin(t / 500 + i) * 4, 3, tr(cs, i, 'r') || { r: ['r', 'b', 'y', 'g'][i] })) },
+  estrelas(t, cs) { perimetro(30).forEach(([x, y], i) => { const brilho = 0.3 + 0.7 * Math.abs(Math.sin(t / 500 + i * 1.7)); desenharSprite(MINI.estrela, x, y, 2, tr(cs, i, 'y'), brilho) }) },
+  fogueira(t, cs) { [[20, 222], [220, 222]].forEach(([x, y], i) => desenharSprite(MINI.fogueira, x, y, 3, Math.floor(t / 150 + i) % 2 ? { o: 'y', y: 'o' } : null)) },
+  ovos(t, cs) { [[16, 224], [30, 226], [212, 226], [226, 224]].forEach(([x, y], i) => desenharSprite(MINI.ovo, x, y, 2, tr(cs, i, 'p'))) },
+  flores(t, cs) { perimetro(34).forEach(([x, y], i) => desenharSprite(MINI.flor, x, y + Math.sin(t / 600 + i) * 1, 2, tr(cs, i, 'p'))) },
+}
+let decoAlpha = 1, decoEntrada = 0
+function desenharMoldura(t) {
+  const els = decoracaoAtual(); if (!els?.length) return
+  decoAlpha = clamp((t - decoEntrada) / 1200, 0, 1)
+  g.save(); g.globalAlpha = decoAlpha
+  for (const d of els) MOLDURA[d.el]?.(t, d.cores)
+  g.restore()
+}
+
+// Tela embaçada (umidade alta): ele limpa com um paninho e ela embaça de novo devagar.
+const cvN = document.createElement('canvas'); cvN.width = cvN.height = 240
+const gN = cvN.getContext('2d')
+function desenharNevoa(t) {
+  const alvo = clima.umid >= 80 ? clamp((clima.umid - 75) / 20, 0, 1) : 0
+  termo.nevoa += (alvo - termo.nevoa) * 0.004
+  if (termo.nevoa < 0.03) return
+  if (termo.limpando) {
+    const p = (t - termo.limpando.t0) / 1800
+    if (p >= 1) termo.limpando = null
+    else termo.limpos.push({ x: 30 + 180 * p, y: 120 + Math.sin(p * Math.PI * 3) * 45, t })
+  }
+  termo.limpos = termo.limpos.filter((c) => t - c.t < 30000)
+  gN.globalCompositeOperation = 'source-over'; gN.clearRect(0, 0, 240, 240)
+  gN.fillStyle = `rgba(205,220,235,${0.42 * termo.nevoa})`; gN.fillRect(0, 0, 240, 240)
+  gN.globalCompositeOperation = 'destination-out'
+  for (const c of termo.limpos) { gN.globalAlpha = clamp(1 - (t - c.t) / 30000, 0, 1); gN.beginPath(); gN.arc(c.x, c.y, 26, 0, Math.PI * 2); gN.fill() }
+  gN.globalAlpha = 1
+  g.drawImage(cvN, 0, 0, 240, 240)
+  if (termo.limpando) { const c = termo.limpos[termo.limpos.length - 1]; if (c) desenharSprite(['llll', 'lsll', 'llll'], c.x, c.y, 5) }
+}
+
+// ================================================================ CONVERSA FLUIDA
+// Parado → atento ("será comigo?") → conversando → parado. Na conversa não precisa de nome:
+// um espera o outro, e ele acena com a cabeça quando você faz uma pausa no meio da frase.
+const papo = { estado: 'parado', ate: 0, pendente: null, contexto: null, ultimoAtento: -1e9, olharAte: 0, ultimoAceno: 0 }
+const RE_ATENCAO = /^\s*(ei+|e a[ií]|[ôó]+|oi+|ol[áa]|psi+u|psit|hey|al[ôo]|ow|hein)(?=[\s,.!?;:]|$)|olh[ae] (pra|para) (mim|c[áa])|voc[êe] (t[áa]|est[áa]) (bem|a[ií]|me ouvindo|sonhando|acordad|dormindo)|t[áa] (sonhando|me ouvindo|a[ií])(?=[\s,.!?;:]|$)|(^|\s)acorda(?=[\s,.!?;:]|$)/i
+const RE_VOCE = /(^|[\s,])(voc[êe]|vc)(?=[\s,.!?;:]|$)/i
+const RE_SIM = /^\s*(sim|[ée]|isso|uhum|aham|ahan|claro|com voc[êe]|[ée] com voc[êe]|t[ôo] falando com voc[êe]|estou falando com voc[êe]|voc[êe] mesmo|exato|positivo)(?=[\s,.!?;:]|$)/i
+const RE_NAO = /^\s*(n[ãa]o|nada|deixa|esquece)(?=[\s,.!?;:]|$)/i
+const RE_TCHAU = /(^|[\s,])(tchau|at[ée] mais|at[ée] logo|at[ée] amanh[ãa]|vou dormir|boa noite|depois a gente (conversa|se fala)|falou)(?=[\s,.!?;:]|$)/i
+function ficarAtento(texto) {
+  Object.assign(papo, { estado: 'atento', ate: now() + 9000, pendente: texto, ultimoAtento: now(), olharAte: now() + 9000 })
+  pararImaginacao()
+  pushLog(`Conversa→ será que é comigo? "${texto.slice(0, 50)}"`)
+  evento({ label: 'será que é comigo?', P: 0.05, A: 0.35, interesse: 0.8, expr: 'curioso', icones: ['olhos', 'pergunta'], som: 'hm', dur: 5000 })
+}
+function naoEraComigo(motivo) {
+  Object.assign(papo, { estado: 'parado', pendente: null, olharAte: 0 })
+  evento({ label: `acho que não era comigo (${motivo})`, P: -0.05, A: -0.1, interesse: 0.3, expr: 'timido', gesto: 'encolher', forcarGesto: true, som: false, dur: 1800 })
+}
+function abrirConversa() {
+  const nova = papo.estado !== 'conversando' || now() > papo.ate
+  Object.assign(papo, { estado: 'conversando', ate: now() + 45000, olharAte: now() + 45000 })
+  pararImaginacao(); atencaoRecebida()
+  if (nova) { pushLog('Conversa→ começou'); saudadeProporcional() }
+}
+function tickPapo() {
+  const t = now()
+  if (papo.estado === 'atento' && t > papo.ate && !vad.ativo && !vad.verificando) naoEraComigo('ninguém confirmou')
+  if (papo.estado === 'conversando' && t > papo.ate && !vad.ativo && !vad.verificando && t > conversaAte) {
+    Object.assign(papo, { estado: 'parado', olharAte: 0 }); pushLog('Conversa→ terminou')
+  }
+}
+// Saudade proporcional: quanto mais tempo sem falar com ele, maior a festa.
+function saudadeProporcional() {
+  const horas = (Date.now() - (P.ultimoContato || Date.now())) / 3600000
+  P.ultimoContato = Date.now()
+  if (horas < 3) return
+  evento({ label: `você voltou depois de ${Math.round(horas)} h!`, P: 0.4 + Math.min(horas / 24, 1) * 0.4, A: 0.6, interesse: 0.9, expr: horas > 12 ? 'apaixonado' : 'empolgado', gesto: 'pulinhos', forcarGesto: true, icones: ['coracao', 'casa'], social: 0.1, dur: 3000, emote: horas > 12 ? 'apaixonado' : null })
+  if (historiaParaContar()) setTimeout(() => contarHistoria(), 9000)
+}
+
+// Pedir atenção em degraus, só quando estiver muito solitário. Ignorado 3 vezes: emburra.
+const pedido = { nivel: 0, ultimo: -1e9, emburradoAte: 0 }
+function pedirAtencao() {
+  pedido.ultimo = now()
+  const n = pedido.nivel++
+  if (n === 0) evento({ label: 'olhou pra você e suspirou', P: -0.05, interesse: 0.4, expr: 'triste', gesto: 'suspiro', forcarGesto: true, dur: 2500 })
+  else if (n === 1) evento({ label: 'bipes pedindo atenção', P: 0, A: 0.3, interesse: 0.5, expr: 'curioso', gesto: 'olhar_em_volta', icones: ['olhos', 'robo'], som: 'curioso', dur: 3000 })
+  else if (n === 2) evento({ label: 'quero atenção!', P: 0.05, A: 0.5, interesse: 0.6, expr: 'curioso', gesto: 'pulinhos', forcarGesto: true, icones: ['pessoa', 'pergunta', 'coracao'], dur: 3500 })
+  else { pedido.nivel = 0; pedido.emburradoAte = now() + 20 * 60000; evento({ label: 'ninguém me deu atenção… emburrei', P: -0.3, A: -0.1, interesse: 0.5, expr: 'desconfiado', gesto: 'timido', forcarGesto: true, som: 'entediado', dur: 4000 }) }
+}
+function atencaoRecebida() {
+  if (pedido.nivel > 0 && now() - pedido.ultimo < 180000) evento({ label: 'finalmente atenção!', P: 0.5, A: 0.6, interesse: 0.9, expr: 'empolgado', gesto: 'pulinhos', forcarGesto: true, icones: ['coracao'], dur: 2500, emote: Math.random() < 0.4 ? 'apaixonado' : null })
+  pedido.nivel = 0; pedido.emburradoAte = Math.min(pedido.emburradoAte, now())
+  P.ultimoContato = Date.now()
+}
+
+// ================================================================ APRENDER SONS
+// Quando um barulho o assusta, ele guarda a "impressão digital" do som (16 faixas do espectro
+// e quanto ele demora para sumir) e o próprio áudio. Se o mesmo som volta, ele reconhece.
+// Depois de 3 sustos sem saber o que é, pergunta: toca o som (e se assusta com ele mesmo) e
+// espera você explicar. Com a explicação, guarda o significado e perde o medo aos poucos.
+let sons = store.get('sons', [])
+const anel = [] // últimos ~2,5 s de som cru, com o horário de cada pedaço
+const salvarSons = () => { try { store.set('sons', sons) } catch {} }
+function fft(re, im) {
+  const n = re.length
+  for (let i = 1, j = 0; i < n; i++) { let bit = n >> 1; for (; j & bit; bit >>= 1) j ^= bit; j ^= bit; if (i < j) { [re[i], re[j]] = [re[j], re[i]]; [im[i], im[j]] = [im[j], im[i]] } }
+  for (let len = 2; len <= n; len <<= 1) {
+    const ang = -2 * Math.PI / len, wr = Math.cos(ang), wi = Math.sin(ang)
+    for (let i = 0; i < n; i += len) {
+      let cr = 1, ci = 0
+      for (let j = 0; j < len / 2; j++) {
+        const a = i + j, b = a + len / 2, vr = re[b] * cr - im[b] * ci, vi = re[b] * ci + im[b] * cr
+        re[b] = re[a] - vr; im[b] = im[a] - vi; re[a] += vr; im[a] += vi
+        const n2 = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = n2
+      }
+    }
+  }
+}
+function assinatura(x, sr) {
+  const N = 2048
+  if (x.length < N * 2) return null
+  let melhor = 0, ini = 0
+  for (let i = 0; i + N <= x.length; i += 512) { let e = 0; for (let k = i; k < i + N; k += 4) e += x[k] * x[k]; if (e > melhor) { melhor = e; ini = i } }
+  const lo = Math.log(100), hi = Math.log(Math.min(8000, sr / 2 - 100)), bandas = new Float64Array(16)
+  // média de várias janelas (≈0,3 s) para o desenho do som não depender do acaso do ruído
+  for (let w = 0; w < 12; w++) {
+    const s = ini + w * (N >> 2); if (s + N > x.length) break
+    const re = new Float64Array(N), im = new Float64Array(N)
+    for (let i = 0; i < N; i++) re[i] = x[s + i] * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / N))
+    fft(re, im)
+    for (let b = 1; b < N / 2; b++) { const f = b * sr / N; if (f < 100 || f > Math.exp(hi)) continue; const i = Math.min(15, Math.floor((Math.log(f) - lo) / (hi - lo) * 16)); bandas[i] += re[b] * re[b] + im[b] * im[b] }
+  }
+  const bruto = [...bandas].map((e) => 10 * Math.log10(e + 1e-9))
+  const db = bruto.map((v, i) => (bruto[Math.max(0, i - 1)] + 2 * v + bruto[Math.min(15, i + 1)]) / 4), media = db.reduce((a, b) => a + b, 0) / 16
+  const energia = (a, b) => { let e = 0; for (let i = Math.max(0, a); i < Math.min(x.length, b); i++) e += x[i] * x[i]; return e + 1e-9 }
+  const dec = Math.log10(energia(ini + 0.15 * sr, ini + 0.3 * sr) / energia(ini, ini + N))
+  return { b: db.map((v) => Math.round((v - media) * 10) / 10), dec: Math.round(dec * 100) / 100 }
+}
+function correlacao(a, b) {
+  const ma = a.reduce((s, v) => s + v, 0) / a.length, mb = b.reduce((s, v) => s + v, 0) / b.length
+  let n = 0, da = 0, db = 0; for (let i = 0; i < a.length; i++) { n += (a[i] - ma) * (b[i] - mb); da += (a[i] - ma) ** 2; db += (b[i] - mb) ** 2 }
+  return da < 1e-6 || db < 1e-6 ? 0 : n / Math.sqrt(da * db)
+}
+// Teste do painel: uma "batida de porta" sintética (ruído grave que some rápido) entra no ouvido.
+function simularBatida() {
+  if (!actx) return
+  const sr = actx.sampleRate, t = now(), n = Math.floor(sr * 0.7), x = new Float32Array(n)
+  let lp = 0
+  for (let i = 0; i < n; i++) { lp += 0.08 * ((Math.random() * 2 - 1) - lp); x[i] = lp * 6 * Math.exp(-i / (sr * 0.09)) + Math.sin(i / sr * 2 * Math.PI * 95) * 0.4 * Math.exp(-i / (sr * 0.12)) }
+  for (let o = 0; o < n; o += 4096) anel.push({ t: t + (o / sr) * 1000, x: x.subarray(o, Math.min(n, o + 4096)) })
+  bus.emit('susto', { label: 'teste (batida de porta)' })
+}
+function trechoDoAnel(de, ate) {
+  const pedacos = anel.filter((p) => p.t >= de && p.t <= ate + 100).map((p) => p.x)
+  const n = pedacos.reduce((a, p) => a + p.length, 0), x = new Float32Array(n)
+  let o = 0; for (const p of pedacos) { x.set(p, o); o += p.length }
+  return x
+}
+function paraBase64(x, srIn) { // 8 kHz, 16 bits, volume normalizado
+  const passo = srIn / 8000, m = Math.floor(x.length / passo), out = new Int16Array(m)
+  let pico = 0; for (let i = 0; i < x.length; i++) pico = Math.max(pico, Math.abs(x[i]))
+  const ganho = pico > 0 ? 0.9 / pico : 1
+  for (let i = 0; i < m; i++) out[i] = clamp(x[Math.floor(i * passo)] * ganho, -1, 1) * 32767
+  let s = ''; const u8 = new Uint8Array(out.buffer); for (let i = 0; i < u8.length; i += 8192) s += String.fromCharCode(...u8.subarray(i, i + 8192))
+  return btoa(s)
+}
+function registrarSom(ts) {
+  if (!actx || !anel.length) return null
+  const x = trechoDoAnel(ts - 500, ts + 400), ass = assinatura(x, actx.sampleRate)
+  if (!ass) return null
+  let s = sons.find((o) => correlacao(o.assinatura.b, ass.b) > 0.75 && Math.abs(o.assinatura.dec - ass.dec) < 0.6)
+  if (s) { s.vezes++; s.ultima = Date.now(); s.assinatura.b = s.assinatura.b.map((v, i) => Math.round(lerp(v, ass.b[i], 0.2) * 10) / 10) }
+  else {
+    s = { id: Date.now(), assinatura: ass, vezes: 1, primeira: Date.now(), ultima: Date.now(), significado: '', icones: [], medo: 1, perguntouEm: 0 }
+    sons.push(s)
+    if (sons.length > 10) sons = sons.sort((a, b) => (b.significado ? 1 : 0) - (a.significado ? 1 : 0) || b.ultima - a.ultima).slice(0, 10)
+  }
+  s.audio = paraBase64(x, actx.sampleRate)
+  if (s.significado) s.medo = Math.max(0.05, s.medo * 0.85) // conhecido: cada vez assusta menos
+  salvarSons()
+  pushLog(`S3→ som ${s.significado ? `"${s.significado}"` : 'desconhecido'} (${s.vezes}ª vez, medo ${s.medo.toFixed(2)})`)
+  return s
+}
+function reagirSusto(s) {
+  pararImaginacao()
+  if (s?.significado && s.medo < 0.5) {
+    return evento({ label: `ah, é só ${s.significado}`, P: 0.05, A: 0.2, interesse: 0.4, tipo: 'susto_conhecido', expr: 'contente', gesto: 'olhar_em_volta', icones: s.icones?.length ? s.icones : ['ok'], som: false, dur: 2500 })
+  }
+  const k = clamp(0.35 + 0.65 * (s ? s.medo : 1), 0.3, 1)
+  evento({ label: s && s.vezes > 1 ? `aquele barulho de novo! (${s.vezes}ª vez)` : 'susto com barulho', P: -0.4 * k, A: 0.9 * k, D: -0.4 * k, interesse: 0.95, expr: 'medo', icone: 'exclamacao', som: 'medo', intens: k, gesto: 'encolher', tipo: 'susto', confianca: -0.01 * k, dur: 1800, emote: k > 0.8 && Math.random() < 0.3 ? 'assustado' : null })
+  sustosHoje++
+  if (s && !s.significado && s.vezes >= 3 && Date.now() - (s.perguntouEm || 0) > 600000) setTimeout(() => perguntarSom(s), 4500)
+}
+let sustosHoje = 0, perguntaSomPendente = null
+function tocarSomGravado(s, assustar) {
+  if (!actx || !s?.audio) return 0
+  const u8 = Uint8Array.from(atob(s.audio), (c) => c.charCodeAt(0)), i16 = new Int16Array(u8.buffer)
+  const buf = actx.createBuffer(1, i16.length, 8000), ch = buf.getChannelData(0)
+  for (let i = 0; i < i16.length; i++) ch[i] = i16[i] / 32768
+  const src = actx.createBufferSource(), gn = actx.createGain(); gn.gain.value = 0.7
+  src.buffer = buf; src.connect(gn).connect(actx.destination); src.start()
+  const dur = buf.duration * 1000
+  falandoAte = now() + dur + 400 // não se assustar com o próprio som… pelo menos não de verdade
+  if (assustar) {
+    setTimeout(() => { foco = { expr: 'medo', ate: now() + 1200 }; iniciarGesto('encolher'); somDe('medo', 0.25) }, 120)
+    setTimeout(() => { foco = { expr: 'timido', ate: now() + 1800 } }, 1500) // "hehe, me assustei comigo mesmo"
+  }
+  return dur
+}
+function perguntarSom(s) {
+  if (!temGente() || dormindo) { perguntaSomPendente = s.id; return }
+  perguntaSomPendente = null
+  s.perguntouEm = Date.now(); salvarSons()
+  pushLog(`Sons→ perguntando sobre um barulho (${s.vezes} sustos)`)
+  evento({ label: 'que barulho é esse que sempre me assusta?', P: -0.05, A: 0.3, interesse: 0.8, expr: 'curioso', gesto: 'nao_sei', forcarGesto: true, icones: ['olhos', 'pergunta'], dur: 2400 })
+  setTimeout(() => {
+    const d = tocarSomGravado(s, true)
+    setTimeout(() => {
+      abrirConversa(); papo.contexto = { tipo: 'som', somId: s.id, tentativas: 0 }
+      foco = { expr: 'curioso', ate: now() + 8000 }; balao = { itens: ['pergunta'], numero: '', t0: now(), ate: now() + 6000 }
+      legenda(`${cfg.nome}: Que barulho é esse? Ele sempre me assusta…`)
+    }, d + 1800)
+  }, 2600)
+}
+function repetirUltimoSom() {
+  const s = [...sons].sort((a, b) => b.ultima - a.ultima)[0]
+  if (!s?.audio) return evento({ label: 'não lembro de nenhum barulho', gesto: 'nao_sei', forcarGesto: true, icones: ['pergunta'], interesse: 0.4, dur: 2500 })
+  const d = tocarSomGravado(s, true)
+  setTimeout(() => { abrirConversa(); papo.contexto = { tipo: 'som', somId: s.id, tentativas: 0 } }, d + 1600)
+}
+function aprenderSom(id, significado, icones) {
+  const s = sons.find((o) => o.id === id); if (!s) return
+  s.significado = String(significado).slice(0, 80); s.icones = (icones || []).slice(0, 3); s.medo = 0.3
+  salvarSons()
+  lembrar(`O barulho que me assustava é ${s.significado}. Não preciso ter medo.`, 7, 'aprendizado')
+  pushLog(`Sons→ aprendi: "${s.significado}"`)
+  setTimeout(() => evento({ label: `ufa, era só ${s.significado}`, P: 0.4, A: -0.2, interesse: 0.6, expr: 'contente', gesto: 'suspiro', forcarGesto: true, confianca: 0.02, dur: 2500 }), 4800)
+}
+
+// ================================================================ IMAGINAÇÃO: devaneios, sonhos e pesadelos
+// Um gerador só: usa lembranças, acontecimentos, gostos e a época do ano para criar uma
+// historinha em 3–4 quadrinhos de ícones. Ela vai para a memória para ele contar depois.
+const imag = { ativo: null, quadroAtual: -1 }
+let imagHoje = store.get('imagHoje', { dia: '', n: 0 })
+const ESQ_HISTORIA = () => ({
+  type: 'object', additionalProperties: false, required: ['titulo', 'quadros', 'resumo', 'tom'],
+  properties: {
+    titulo: { type: 'string' }, resumo: { type: 'string' }, tom: { type: 'string', enum: ['doce', 'engracado', 'estranho', 'aventura', 'assustador'] },
+    quadros: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['icones', 'emocao'], properties: { icones: { type: 'array', items: { type: 'string', enum: Object.keys(ICONES) } }, emocao: { type: 'string', enum: EMOCOES } } } },
+  },
+})
+function epoca() {
+  const d = dataAtiva(), h = hojeData(), m = h.getMonth()
+  const estacao = m === 11 || m <= 1 ? 'verão' : m <= 4 ? 'outono' : m <= 7 ? 'inverno' : 'primavera'
+  return `${estacao} no Brasil${d ? `, perto de ${d.nome}` : ''}`
+}
+async function imaginar(tipo) {
+  if (!cfg.key) return null
+  const dia = new Date().toLocaleDateString('sv')
+  if (imagHoje.dia !== dia) imagHoje = { dia, n: 0 }
+  if (imagHoje.n >= 14) return null
+  imagHoje.n++; store.set('imagHoje', imagHoje)
+  const tom = tipo === 'pesadelo' ? 'um PESADELO de robô: assustador mas bobinho (ex.: ficar sem bateria, um aspirador gigante, perder o Wi-Fi, um barulho no escuro). Nunca violento ou cruel.'
+    : tipo === 'sonho' ? 'um SONHO: uma mistura estranha e criativa das coisas que aconteceram hoje, como os sonhos de verdade.'
+      : 'um DEVANEIO acordado: uma historinha que ele imagina por conta própria, divertida ou de aventura.'
+  const sys = `Você é a imaginação de ${cfg.nome}, um robozinho de mesa com personalidade própria que mora com ${cfg.dono}. Crie ${tom}
+Conte em 3 ou 4 quadrinhos; cada quadrinho tem 1 a 3 ícones (da lista) e a emoção dele naquele momento. Use as lembranças e os acontecimentos como inspiração.
+Personalidade: extroversão ${P.extroversao.toFixed(2)}, curiosidade ${P.curiosidade.toFixed(2)}, afeto ${P.afeto.toFixed(2)}. Gostos: ${Object.entries(P.gostos).filter(([, v]) => v > 0.2).map(([k]) => k).join(', ') || 'ainda descobrindo'}.
+Época: ${epoca()}.
+Acontecimentos de hoje: ${acontecimentos.slice(0, 6).map((a) => a.txt).join('; ') || 'nada demais'}.
+Lembranças:
+${lembrancas(10).map((m) => '- ' + m.txt).join('\n') || '- quase nada ainda'}
+ÍCONES: ${Object.keys(ICONES).join(', ')}
+EMOÇÕES: ${EMOCOES.join(', ')}
+Responda SÓ com JSON: {"titulo": "curto", "quadros": [{"icones": [...], "emocao": "..."}], "resumo": "a história em 1 ou 2 frases, em primeira pessoa, em português", "tom": "doce|engracado|estranho|aventura|assustador"}`
+  try {
+    const r = await pedirJSON([{ role: 'system', content: sys }], 'historia', ESQ_HISTORIA(), { temperature: 0.95 })
+    const j = JSON.parse((r.choices[0].message.content.match(/\{[\s\S]*\}/) || ['{}'])[0])
+    const quadros = (j.quadros || []).map((q) => ({ icones: (q.icones || []).filter((x) => ICONES[x]).slice(0, 3), emocao: EMOCOES.includes(q.emocao) ? q.emocao : 'curioso' })).filter((q) => q.icones.length).slice(0, 4)
+    if (!quadros.length) return null
+    const h = { tipo, titulo: String(j.titulo || '').slice(0, 60), resumo: String(j.resumo || '').slice(0, 240), tom: j.tom || 'doce', quadros }
+    pushLog(`Imaginação→ ${tipo}: ${h.titulo} · ${h.quadros.map((q) => q.icones.map((x) => ICONES[x]).join('')).join(' | ')}`)
+    return h
+  } catch (e) { pushLog('Imaginação: ' + e.message); return null }
+}
+function guardarHistoria(h) {
+  if (!h) return
+  const rot = { devaneio: 'Imaginei', sonho: 'Sonhei', pesadelo: 'Tive um pesadelo' }[h.tipo]
+  lembrar(`${rot}: ${h.titulo} — ${h.resumo}`, h.tipo === 'pesadelo' ? 6 : 5, h.tipo)
+  memorias[0].historia = h; memorias[0].contado = false
+  store.set('memorias', memorias)
+}
+const historiaParaContar = () => memorias.find((m) => m.historia && !m.contado && Date.now() - m.t < 3 * 86400000)
+function pararImaginacao() { if (imag.ativo?.tipo === 'devaneio') pushLog('Imaginação→ devaneio interrompido'); if (imag.ativo) imag.ativo = null }
+async function devanear(forcar = false) {
+  if (imag.ativo || dormindo || (!forcar && temGente() && N.estimulo > 0.35)) return
+  imag.ativo = { tipo: 'devaneio', t0: now(), hist: null }
+  imag.quadroAtual = -1
+  pushLog('Imaginação→ começou a devanear')
+  const h = await imaginar('devaneio')
+  if (!h || imag.ativo?.tipo !== 'devaneio') { imag.ativo = null; return }
+  imag.ativo = { tipo: 'devaneio', t0: now(), hist: h }
+  guardarHistoria(h)
+}
+function contarHistoria(m = historiaParaContar()) {
+  m = m || memorias.find((x) => x.historia)
+  if (!m?.historia) return evento({ label: 'não imaginei nada ainda', gesto: 'nao_sei', forcarGesto: true, icones: ['pensando' in ICONES ? 'pensando' : 'cerebro', 'pergunta'], interesse: 0.4, dur: 2500 })
+  pararImaginacao()
+  imag.ativo = { tipo: 'contando', t0: now() + 1600, hist: m.historia }
+  imag.quadroAtual = -1
+  m.contado = true; store.set('memorias', memorias)
+  const intro = { devaneio: ['ideia', 'livro'], sonho: ['dormir', 'livro'], pesadelo: ['fantasma', 'livro'] }[m.historia.tipo] || ['livro']
+  evento({ label: `contando: ${m.historia.titulo}`, P: 0.2, A: 0.3, interesse: 0.6, expr: 'empolgado', gesto: 'pulinhos', forcarGesto: true, icones: intro, dur: 1500 })
+  legenda(`${cfg.nome}: ${m.historia.resumo}`)
+}
+// Troca de quadrinho: a emoção do rosto acompanha a história.
+function tickImaginacao() {
+  const a = imag.ativo
+  if (!a?.hist) return
+  const i = Math.floor((now() - a.t0) / 2300)
+  if (i < 0) return
+  if (i >= a.hist.quadros.length) {
+    imag.ativo = null
+    if (a.tipo === 'devaneio') evento({ label: `imaginei uma história: ${a.hist.titulo}`, P: 0.25, A: 0, interesse: 0.5, expr: 'contente', som: false, dur: 2000 })
+    else evento({ label: 'terminei de contar', P: 0.2, interesse: 0.5, expr: 'orgulhoso', gesto: 'sim', forcarGesto: true, dur: 2000 })
+    return
+  }
+  if (i !== imag.quadroAtual) {
+    imag.quadroAtual = i
+    const q = a.hist.quadros[i]
+    foco = { expr: q.emocao, ate: now() + 2400 }
+    if (a.tipo === 'contando') somDe(q.emocao, 0.4)
+  }
+}
+function desenharImaginacao(t) {
+  const a = imag.ativo; if (!a) return
+  const q = a.hist?.quadros[Math.max(0, Math.floor((t - a.t0) / 2300))]
+  g.save()
+  if (a.tipo === 'devaneio') {
+    g.fillStyle = '#e8f6ff'; g.globalAlpha = 0.92
+    for (const [x, y, r] of [[200, 82, 3], [209, 70, 5]]) { g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill() }
+    for (const [x, y, rx, ry] of [[150, 32, 30, 19], [178, 24, 30, 21], [206, 34, 26, 18], [174, 44, 42, 15]]) { g.beginPath(); g.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2); g.fill() }
+    g.globalAlpha = 1; g.textAlign = 'center'; g.textBaseline = 'middle'
+    if (q) { g.font = '20px "Noto Color Emoji", "Apple Color Emoji", "Segoe UI Emoji", sans-serif'; q.icones.forEach((k, i) => g.fillText(ICONES[k], 178 + (i - (q.icones.length - 1) / 2) * 25, 33)) }
+    else { g.fillStyle = '#5b6b7b'; g.font = 'bold 22px system-ui'; g.fillText('.'.repeat(1 + Math.floor(t / 400) % 3), 178, 30) }
+  } else if (a.tipo === 'contando' && q && t >= a.t0) {
+    const n = a.hist.quadros.length, i = Math.floor((t - a.t0) / 2300)
+    g.fillStyle = '#1b2632'; g.strokeStyle = '#7df9ff'; g.lineWidth = 2
+    g.beginPath(); g.roundRect(30, 4, 180, 48, 10); g.fill(); g.stroke()
+    g.textAlign = 'center'; g.textBaseline = 'middle'; g.font = '24px "Noto Color Emoji", "Apple Color Emoji", "Segoe UI Emoji", sans-serif'
+    q.icones.forEach((k, j) => g.fillText(ICONES[k], 120 + (j - (q.icones.length - 1) / 2) * 34, 26))
+    for (let j = 0; j < n; j++) { g.fillStyle = j <= i ? '#7df9ff' : '#3a4a5a'; g.fillRect(120 - n * 6 + j * 12, 46, 6, 3) }
+  }
+  g.restore()
+}
+
+// Sono: ciclos com fase REM (olhos se mexendo rápido). No REM ele sonha, ou tem pesadelo
+// (mais provável depois de um dia de sustos, solidão ou mau humor).
+const sono = { proxREM: Infinity, rem: null, touca: false, ultimoSonho: null, remDur: 180000 }
+function comecarREM(tipoForcado) {
+  const prob = clamp(0.08 + sustosHoje * 0.07 + (humor.P < 0 ? 0.15 : 0) + (N.social < 0.3 ? 0.1 : 0) + (P.confianca < 0.4 ? 0.08 : 0), 0, 0.6)
+  const tipo = tipoForcado || (Math.random() < prob ? 'pesadelo' : 'sonho')
+  sono.rem = { tipo, t0: now(), ate: now() + sono.remDur, hist: null }
+  sono.proxREM = now() + 90 * 60000
+  pushLog(`Cérebro→ REM: ${tipo} (chance de pesadelo ${(prob * 100).toFixed(0)}%)`)
+  imaginar(tipo).then((h) => { if (sono.rem && h) { sono.rem.hist = h; guardarHistoria(h); sono.ultimoSonho = h } })
+}
+function tickSono() {
+  const t = now()
+  if (!dormindo) { sono.rem = null; return }
+  if (!sono.rem && t > sono.proxREM && cfg.key) comecarREM()
+  const r = sono.rem; if (!r) return
+  // falar dormindo (bipes bem baixinhos) e mexidinhas
+  if (Math.random() < 0.04) { balanco = 0.4; somDe(r.tipo === 'pesadelo' ? 'triste' : 'contente', 0.12) }
+  if (t > r.ate) {
+    sono.rem = null
+    if (r.tipo === 'pesadelo' && Math.random() < 0.5) acordarDoPesadelo(r.hist)
+  }
+}
+function acordarDoPesadelo(h) {
+  dormindo = false; foco = null
+  pushLog('Cérebro→ acordou de um pesadelo!')
+  const ic = h?.quadros?.find((q) => q.emocao === 'medo')?.icones || ['fantasma']
+  evento({ label: `acordei de um pesadelo${h ? ': ' + h.titulo : ''}`, P: -0.5, A: 0.8, D: -0.4, interesse: 0.95, expr: 'medo', gesto: 'encolher', forcarGesto: true, icones: [...ic.slice(0, 2), 'pergunta'], dur: 3500, emote: 'assustado' })
+  papo.contexto = { tipo: 'pesadelo', hist: h }
+  if (temGente()) setTimeout(() => { abrirConversa(); papo.contexto = { tipo: 'pesadelo', hist: h } }, 3000)
+}
+
+// ================================================================ CORPO TÉRMICO
+// Faixas de frio e calor com respostas variadas (e acessórios); o jeito dele decide as palhaçadas.
+const termo = { prox: 0, hist: [], ultimaBrusca: -1e9, palhacada: -1e9, noelAte: 0, oculosAte: 0, nevoa: 0, limpando: null, limpos: [], ultima: '' }
+let forcaTremor = 1
+const nivelFrio = (T) => (T <= 8 ? 5 : T <= 12 ? 4 : T <= 15 ? 3 : T <= 18 ? 2 : T <= 22 ? 1 : 0)
+const nivelCalor = (T) => (T >= 34 ? 3 : T >= 31 ? 2 : T >= 28 ? 1 : 0)
+const JINGLE = [4, 4, 4, 4, 4, 4, 4, 7, 0, 2, 4].map((st, i) => ({ st, d: [0.18, 0.18, 0.36, 0.18, 0.18, 0.36, 0.18, 0.18, 0.27, 0.09, 0.5][i] }))
+const VERAO = [0, 4, 7, 9, 7, 4, 7, 12].map((st) => ({ st, d: 0.15 }))
+function tickClima() {
+  const t = now(), T = clima.temp, U = clima.umid, f = nivelFrio(T), q = nivelCalor(T)
+  vestir('cachecol', f >= 3); vestir('gorro', f >= 4 && t > termo.noelAte && !(dormindo && sono.touca)); vestir('nariz', f >= 4)
+  vestir('noel', t < termo.noelAte)
+  vestir('leque', q === 1 && !dormindo); vestir('oculos', !dormindo && (q >= 2 || t < termo.oculosAte)); vestir('lingua', q >= 3 && !dormindo)
+  vestir('guarda_chuva', U >= 90 && !dormindo); vestir('touca', dormindo && sono.touca)
+  forcaTremor = 0.4 + f * 0.25
+  // mudança brusca (3 °C ou mais em 10 min)
+  if (!termo.hist.length || t - termo.hist[termo.hist.length - 1].t > 5000) termo.hist.push({ t, T })
+  while (termo.hist.length && t - termo.hist[0].t > 600000) termo.hist.shift()
+  const antes = termo.hist[0]
+  if (antes && Math.abs(T - antes.T) >= 3 && t - termo.ultimaBrusca > 600000) {
+    termo.ultimaBrusca = t; termo.hist = [{ t, T }]
+    return evento({ label: T < antes.T ? `ué, esfriou! (${antes.T}→${T} °C)` : `ué, esquentou! (${antes.T}→${T} °C)`, P: 0, A: 0.5, interesse: 0.75, expr: 'surpreso', gesto: 'surpresa', icones: [T < antes.T ? 'neve' : 'calor', 'pergunta'], dur: 2500 })
+  }
+  if (dormindo || t < termo.prox || jogo || palco || gravando || imag.ativo) return
+  const nivel = Math.max(f, q, U <= 30 ? 1 : 0, U >= 80 ? 1 : 0)
+  if (!nivel) { termo.prox = t + 60000; return }
+  termo.prox = t + rnd(70000, 160000) / (0.6 + nivel * 0.4)
+  reagirClima(T, U, f, q)
+}
+function reagirClima(T, U, f, q) {
+  const palhaco = P.extroversao > 0.6 && now() - termo.palhacada > 30 * 60000, mes = hojeData().getMonth(), op = []
+  if (f >= 1) op.push(['arrepio', 1]); if (f >= 2) op.push(['tremer', 2]); if (f >= 4) op.push(['dentes', 2]); if (f >= 5) op.push(['gelo', 2])
+  if (f >= 2 && palhaco && (mes === 11 || mes === 10)) op.push(['noel', 4])
+  if (q >= 1) op.push(['abanar', 1]); if (q >= 2) op.push(['ufa', 2]); if (q >= 3) op.push(['derreter', 3]); if (q >= 2 && palhaco) op.push(['verao', 3])
+  if (U <= 30) op.push(['tosse', 2]); if (U >= 80) op.push(['limpar', 2])
+  const ops = op.filter(([k]) => k !== termo.ultima).length ? op.filter(([k]) => k !== termo.ultima) : op
+  let r = Math.random() * ops.reduce((a, [, w]) => a + w, 0), esc = ops[0][0]
+  for (const [k, w] of ops) { r -= w; if (r <= 0) { esc = k; break } }
+  termo.ultima = esc
+  const ev = {
+    arrepio: () => { iniciarGesto('tremer'); somDe('frio', 0.3); foco = { expr: 'frio', ate: now() + 1500 } },
+    tremer: () => evento({ label: `tremendo de frio (${T} °C)`, P: -0.15, A: 0.1, interesse: 0.3, expr: 'frio', gesto: 'tremer', forcarGesto: true, som: 'frio', icones: f >= 3 ? ['neve'] : [], dur: 3000 }),
+    dentes: () => evento({ label: 'batendo os dentes de frio', P: -0.15, interesse: 0.3, expr: 'frio', gesto: 'tremer', forcarGesto: true, som: 'dentes', dur: 2500 }),
+    gelo: () => evento({ label: `congelando! (${T} °C)`, P: -0.2, interesse: 0.5, som: false, emote: 'gelo', dur: 2500 }),
+    noel: () => { termo.palhacada = now(); termo.noelAte = now() + 45000; evento({ label: 'vestiu de Papai Noel!', P: 0.5, A: 0.5, interesse: 0.8, expr: 'rindo', gesto: 'dancinha', forcarGesto: true, icones: ['presente', 'neve'], som: false, dur: 4000 }); setTimeout(() => tocarMelodia(JINGLE, 1), 900) },
+    abanar: () => evento({ label: `calor (${T} °C)`, P: -0.1, A: -0.3, interesse: 0.3, expr: 'calor', icone: 'gota', som: 'calor', dur: 3500 }),
+    ufa: () => evento({ label: `que calor! (${T} °C)`, P: -0.2, A: -0.35, interesse: 0.4, expr: 'calor', gesto: 'suspiro', forcarGesto: true, icones: ['sol', 'agua'], som: 'calor', dur: 3500 }),
+    derreter: () => { pushLog(`Cérebro→ derretendo (${T} °C)`); mostrarEmote('calor', 1800, { saida: 'derreter', volta: 'pixel' }) },
+    verao: () => { termo.palhacada = now(); termo.oculosAte = now() + 40000; evento({ label: 'modo verão!', P: 0.4, A: 0.5, interesse: 0.8, expr: 'orgulhoso', gesto: 'dancinha', forcarGesto: true, icones: ['sol', 'musica'], som: false, dur: 4000 }); setTimeout(() => tocarMelodia(VERAO, 1), 800) },
+    tosse: () => evento({ label: `ar seco (${U} %)`, P: -0.1, interesse: 0.3, som: 'tosse', icones: Math.random() < 0.5 ? ['agua', 'pergunta'] : [], dur: 2500 }),
+    limpar: () => { termo.limpando = { t0: now() }; evento({ label: `tela embaçada (${U} %), limpando`, P: -0.05, interesse: 0.3, expr: 'desconfiado', som: false, dur: 2200 }) },
+  }
+  ev[esc]?.()
+}
+
+// ================================================================ DATAS COMEMORATIVAS
+let dataSim = store.get('dataSim', '')
+function hojeData() { return dataSim ? new Date(dataSim + 'T12:00:00') : new Date() }
+function pascoa(a) {
+  const b = Math.floor(a / 100), c = a % 100, d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25), gg = Math.floor((b - f + 1) / 3)
+  const h = (19 * (a % 19) + b - d - gg + 15) % 30, i = Math.floor(c / 4), k = c % 4, l = (32 + 2 * e + 2 * i - h - k) % 7, m = Math.floor(((a % 19) + 11 * h + 22 * l) / 451)
+  return new Date(a, Math.floor((h + l - 7 * m + 114) / 31) - 1, ((h + l - 7 * m + 114) % 31) + 1, 12)
+}
+const somaDias = (d, n) => new Date(d.getTime() + n * 86400000)
+const DATAS = [
+  { id: 'natal', nome: 'o Natal', quando: (a) => new Date(a, 11, 25, 12), antes: 50, depois: 1, deco: [{ el: 'luzes' }, { el: 'neve' }] },
+  { id: 'ano_novo', nome: 'o Ano-Novo', quando: (a) => new Date(a, 11, 31, 12), antes: 4, depois: 1, deco: [{ el: 'fogos' }, { el: 'confete', cores: ['y', 'w', 'o'] }] },
+  { id: 'carnaval', nome: 'o Carnaval', quando: (a) => somaDias(pascoa(a), -47), antes: 7, depois: 1, deco: [{ el: 'confete' }, { el: 'serpentina' }] },
+  { id: 'pascoa', nome: 'a Páscoa', quando: pascoa, antes: 6, depois: 1, deco: [{ el: 'ovos' }, { el: 'flores' }] },
+  { id: 'namorados', nome: 'o Dia dos Namorados', quando: (a) => new Date(a, 5, 12, 12), antes: 4, depois: 0, deco: [{ el: 'coracoes' }] },
+  { id: 'festa_junina', nome: 'a Festa Junina', quando: (a) => new Date(a, 5, 24, 12), antes: 23, depois: 6, deco: [{ el: 'bandeirinhas' }, { el: 'fogueira' }] },
+  { id: 'criancas', nome: 'o Dia das Crianças', quando: (a) => new Date(a, 9, 12, 12), antes: 5, depois: 0, deco: [{ el: 'baloes' }] },
+  { id: 'halloween', nome: 'o Halloween', quando: (a) => new Date(a, 9, 31, 12), antes: 7, depois: 1, deco: [{ el: 'aboboras' }, { el: 'fantasmas' }] },
+  { id: 'aniversario_robo', nome: 'o meu aniversário', quando: (a) => { const n = new Date(P.nasceu); return a > n.getFullYear() ? new Date(a, n.getMonth(), n.getDate(), 12) : null }, antes: 1, depois: 0, deco: [{ el: 'baloes' }, { el: 'confete' }] },
+  { id: 'aniversario_dono', nome: 'o aniversário do dono', quando: (a) => { const m = /^(\d{1,2})\/(\d{1,2})$/.exec(P.anivDono || ''); return m ? new Date(a, +m[2] - 1, +m[1], 12) : null }, antes: 2, depois: 0, deco: [{ el: 'baloes' }, { el: 'estrelas' }] },
+]
+const nomeData = (id) => (id === 'aniversario_dono' ? `o aniversário de ${cfg.dono}` : DATAS.find((d) => d.id === id)?.nome || '')
+function dataAtiva() {
+  const h = hojeData()
+  for (const d of DATAS) for (const ano of [h.getFullYear() - 1, h.getFullYear(), h.getFullYear() + 1]) {
+    const q = d.quando(ano); if (!q) continue
+    const dias = (q - h) / 86400000
+    if (dias <= d.antes && dias >= -d.depois - 0.6) return { ...d, nome: nomeData(d.id), ano: q.getFullYear(), dias: Math.round(dias) }
+  }
+  return null
+}
+function decoracaoAtual() {
+  const d = dataAtiva()
+  return d && P.deco && P.deco.chave === d.id + d.ano ? P.deco.elementos : null
+}
+function decorar(pedido = false) {
+  const d = dataAtiva()
+  if (!d) { if (pedido) evento({ label: 'não tem data comemorativa perto', gesto: 'nao_sei', forcarGesto: true, icones: ['calendario', 'pergunta'], interesse: 0.4, dur: 2500 }); return }
+  const sugs = (P.sugestoes || []).filter((s) => s.data === d.id && s.estado !== 'usada' && s.elementos?.length)
+  const mapa = new Map()
+  for (const x of [...d.deco, ...sugs.flatMap((s) => s.elementos.map((el) => ({ el, cores: s.cores })))]) mapa.set(x.el, { el: x.el, cores: x.cores || [] })
+  sugs.forEach((s) => (s.estado = 'usada'))
+  P.deco = { chave: d.id + d.ano, data: d.id, elementos: [...mapa.values()].slice(0, 5), t: Date.now(), aprovado: null, perguntar: false }
+  store.set('pers', P); decoEntrada = now()
+  pushLog(`Datas→ decorou para ${d.nome}: ${P.deco.elementos.map((e) => e.el).join(', ')}`)
+  evento({ label: `decorei a tela para ${d.nome}${sugs.length ? ' (com a sua sugestão!)' : ''}`, P: 0.4, A: 0.4, interesse: 0.85, expr: 'orgulhoso', gesto: 'pulinhos', forcarGesto: true, dur: 3000, lembrar: 4 })
+  setTimeout(() => perguntarDeco(), 3800)
+}
+function perguntarDeco() {
+  const d = dataAtiva(); if (!d || !P.deco) return
+  if (!temGente() || dormindo) { P.deco.perguntar = true; return }
+  P.deco.perguntar = false
+  abrirConversa()
+  papo.contexto = { tipo: 'deco', nome: d.nome, elementos: P.deco.elementos.map((e) => e.el) }
+  evento({ label: 'gostou da decoração?', P: 0.1, A: 0.3, interesse: 0.6, expr: 'curioso', gesto: 'talvez', forcarGesto: true, icones: ['ok', 'nao_ok', 'pergunta'], dur: 5000 })
+  legenda(`${cfg.nome}: Decorei para ${d.nome}! Gostou? Tem alguma ideia?`)
+}
+function opiniaoDeco(op) {
+  if (!P.deco) return
+  P.deco.aprovado = op === 'gostou'
+  const d = dataAtiva()
+  lembrar(`${cfg.dono} ${op === 'gostou' ? 'gostou' : 'não gostou muito'} da decoração para ${d?.nome || 'a data'}`, 5)
+  if (op === 'nao_gostou') papo.contexto = { tipo: 'deco', nome: d?.nome, elementos: P.deco.elementos.map((e) => e.el) }
+  store.set('pers', P)
+}
+function receberSugestao(s) {
+  const ativa = dataAtiva()
+  const sug = { id: Date.now(), data: s.data || ativa?.id || '', ideia: String(s.ideia).slice(0, 140), elementos: (s.elementos || []).filter((e) => ELEMENTOS.includes(e)).slice(0, 3), cores: (s.cores || []).filter((c) => PALETA[c]).slice(0, 4), estado: 'guardada', t: Date.now() }
+  P.sugestoes = [...(P.sugestoes || []), sug].slice(-30)
+  lembrar(`${cfg.dono} sugeriu para ${nomeData(sug.data) || 'a decoração'}: ${sug.ideia}`, 6, 'sugestao')
+  store.set('pers', P)
+  pushLog(`Datas→ sugestão guardada (${sug.data || 'sem data'}): ${sug.ideia} → ${sug.elementos.join(', ') || 'vou pesquisar'}`)
+  const agora = ativa && sug.data === ativa.id
+  if (!sug.elementos.length) pesquisarIdeia(sug).then(() => { if (agora) aplicarSugestao(sug) })
+  else if (agora) setTimeout(() => aplicarSugestao(sug), 4500)
+  else setTimeout(() => evento({ label: `guardei sua ideia para ${nomeData(sug.data) || 'depois'}`, P: 0.2, interesse: 0.5, expr: 'contente', gesto: 'sim', forcarGesto: true, icones: ['calendario', 'ok'], dur: 2500 }), 4500)
+}
+function aplicarSugestao(sug) {
+  if (!sug.elementos.length) return evento({ label: `ainda não sei desenhar "${sug.ideia}"`, P: -0.05, interesse: 0.4, expr: 'timido', gesto: 'nao_sei', forcarGesto: true, icones: ['pergunta'], dur: 2500 })
+  const d = dataAtiva(); if (!d) return
+  if (!P.deco || P.deco.chave !== d.id + d.ano) return decorar()
+  for (const el of sug.elementos) { const i = P.deco.elementos.findIndex((x) => x.el === el); const item = { el, cores: sug.cores }; if (i >= 0) P.deco.elementos[i] = item; else P.deco.elementos.push(item) }
+  P.deco.elementos = P.deco.elementos.slice(-5); sug.estado = 'usada'; store.set('pers', P); decoEntrada = now()
+  evento({ label: `coloquei sua ideia: ${sug.ideia}`, P: 0.35, A: 0.3, interesse: 0.7, expr: 'orgulhoso', gesto: 'pulinhos', forcarGesto: true, icones: ['ok', 'presente'], dur: 2500 })
+}
+let modelosGroq = []
+async function pesquisarIdeia(sug) {
+  const modelo = modelosGroq.find((i) => /^groq\/compound$/i.test(i)) || modelosGroq.find((i) => /compound/i.test(i)) || cfg.model
+  const pedido = `Um robozinho de mesa decora a borda da tela (pixel art, 240x240) para ${nomeData(sug.data) || 'uma ocasião especial'}. A ideia de ${cfg.dono} foi: "${sug.ideia}".
+Pesquise o que precisar (cores, símbolos da ideia) e traduza para os elementos que ele sabe desenhar: ${ELEMENTOS.join(', ')}.
+Cores possíveis (letra=cor): ${Object.entries(NOME_COR).map(([k, v]) => `${k}=${v}`).join(', ')}.
+Responda SÓ com JSON: {"elementos": [1 a 3 da lista], "cores": [até 4 letras], "nota": "o que você descobriu, numa frase curta em português"}`
+  try {
+    pushLog(`Datas→ pesquisando "${sug.ideia}" (${modelo})…`)
+    const corpo = { model: modelo, messages: [{ role: 'user', content: pedido }], max_completion_tokens: 1500, ...(/gpt-oss/i.test(modelo) ? { reasoning_effort: 'low' } : {}) }
+    const r = await groq('/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(corpo) })
+    const j = JSON.parse((String(r.choices[0].message.content).match(/\{[\s\S]*\}/) || ['{}'])[0])
+    sug.elementos = (j.elementos || []).filter((e) => ELEMENTOS.includes(e)).slice(0, 3)
+    sug.cores = (j.cores || []).filter((c) => PALETA[c]).slice(0, 4)
+    sug.nota = String(j.nota || '').slice(0, 160); sug.estado = sug.elementos.length ? 'pesquisada' : 'sem_jeito'
+    pushLog(`Datas→ pesquisa: ${sug.nota || '—'} → ${sug.elementos.join(', ') || 'nada que eu saiba desenhar'}`)
+    if (sug.nota) lembrar(`Pesquisei sobre "${sug.ideia}": ${sug.nota}`, 4, 'aprendizado')
+    store.set('pers', P)
+  } catch (e) { pushLog('Pesquisa: ' + e.message) }
+}
+
+// ================================================================ RITUAIS
+let carneirosAte = 0, tocaAqui = null
+function ritualBoaNoite() {
+  pararImaginacao(); sono.touca = true; vestir('touca', true)
+  evento({ label: 'boa noite!', P: 0.3, A: -0.5, interesse: 0.5, expr: 'sono', gesto: 'bocejo', forcarGesto: true, icones: ['lua', 'dormir'], som: 'sono', dur: 3000 })
+  carneirosAte = now() + 7000
+  setTimeout(() => { if (!gravando) { dormir('boa noite'); sono.proxREM = now() + 20 * 60000 } }, 7200)
+}
+function desenharCarneiros(t) {
+  if (t > carneirosAte) return
+  const k = 7000 - (carneirosAte - t)
+  g.fillStyle = '#9aa5b1'; g.fillRect(112, 214, 4, 18); g.fillRect(124, 214, 4, 18); g.fillRect(108, 218, 24, 3) // cerquinha
+  for (let i = 0; i < 3; i++) {
+    const p = ((k - i * 2100) / 2100); if (p < 0 || p > 1) continue
+    desenharSprite(CARNEIRO, 30 + p * 180, 222 - Math.sin(p * Math.PI) * 34, 3)
+    if (p > 0.48 && p < 0.52) balao = { itens: [], numero: String(i + 1), t0: now(), ate: now() + 900 }
+  }
+}
+function comecarTocaAqui() {
+  tocaAqui = { t0: now(), ate: now() + 2200 }
+  evento({ label: 'toca aqui!', P: 0.2, A: 0.5, interesse: 0.7, expr: 'empolgado', icones: [], som: 'hm', dur: 2200 })
+  balao = { itens: ['ok'], numero: '', t0: now(), ate: now() + 2200 }
+}
+function tickTocaAqui() {
+  if (tocaAqui && now() > tocaAqui.ate) { tocaAqui = null; evento({ label: 'me deixou no vácuo!', P: -0.1, A: 0.2, interesse: 0.6, expr: 'rindo', gesto: 'rir', forcarGesto: true, icones: ['errado'], dur: 2200 }) }
+}
+function acertouTocaAqui() {
+  tocaAqui = null
+  evento({ label: 'toca aqui! 🙌', P: 0.5, A: 0.6, interesse: 0.8, expr: 'empolgado', gesto: 'pulinhos', forcarGesto: true, social: 0.05, dur: 2000, emote: Math.random() < 0.5 ? 'estrela' : null })
+}
+
+// Tudo o que roda a cada segundo, acordado ou dormindo.
+function tickVida() {
+  tickPapo(); tickClima(); tickSono(); tickTocaAqui()
+  if (perguntaSomPendente && temGente() && !dormindo && !papo.contexto) { const s = sons.find((o) => o.id === perguntaSomPendente); if (s) perguntarSom(s); else perguntaSomPendente = null }
+  if (P.deco?.perguntar && temGente() && !dormindo && !papo.contexto && papo.estado !== 'conversando') perguntarDeco()
+}
+setInterval(tickImaginacao, 100)
+
 
 // ================================================================ telas
 // Com um painel aberto, o rosto encolhe e sobe para continuar visível.
@@ -1585,7 +2512,7 @@ $('#cSave').onclick = () => {
 let confirmarReset = 0
 $('#cReset').onclick = () => {
   if (now() - confirmarReset > 4000) { confirmarReset = now(); $('#cReset').textContent = 'Toque de novo para confirmar'; return }
-  store.del('pers'); store.del('humor'); store.del('memorias'); location.reload()
+  store.del('pers'); store.del('humor'); store.del('memorias'); store.del('sons'); location.reload()
 }
 // Testes de gesto, expressão e ícones (painel 🐞).
 const selG = $('#tGesto'), selE = $('#tExpr')
@@ -1602,11 +2529,23 @@ $('#tIcones').onclick = () => {
     : { itens: Array.from({ length: n }, () => ks[Math.floor(Math.random() * ks.length)]), numero: '', t0: now(), ate: now() + 4500 }
 }
 $('#tRefletir').onclick = () => { pushLog('Cérebro→ refletindo…'); refletir(true) }
+$('#tDevanear').onclick = () => devanear(true)
+$('#tContar').onclick = () => contarHistoria()
+$('#tSonhar').onclick = () => { if (!dormindo) dormir('teste'); sono.remDur = 40000; comecarREM('sonho') }
+$('#tPesadelo').onclick = () => { if (!dormindo) dormir('teste'); sono.remDur = 40000; comecarREM('pesadelo') }
+$('#tBoaNoite').onclick = () => ritualBoaNoite()
+$('#tTocaAqui').onclick = () => comecarTocaAqui()
+const selEm = $('#tEmote'); Object.keys(EMOTES).forEach((k) => selEm.add(new Option(k, k)))
+$('#tMostrarEmote').onclick = () => { palco = null; if (dormindo) acordar(); mostrarEmote(selEm.value) }
+$('#tDecorar').onclick = () => decorar(true)
+$('#tData').value = dataSim
+$('#tData').onchange = () => { dataSim = $('#tData').value; store.set('dataSim', dataSim); pushLog('Datas→ simulando ' + (dataSim || 'hoje')) }
+$('#tEsquecerSons').onclick = () => { sons = []; salvarSons(); pushLog('Sons→ esqueci todos os barulhos') }
 $('#tMelodia').onclick = () => tocarMelodia(P.melodia || melodiaInventada(), 1.1)
 $('#btnDebug').onclick = () => { $('#debug').hidden = !$('#debug').hidden; $('#cfg').hidden = true }
 document.querySelectorAll('[data-sim]').forEach((b) => (b.onclick = () => {
   const s = b.dataset.sim
-  if (s === 'susto') bus.emit('susto', { label: 'teste' })
+  if (s === 'susto') simularBatida()
   if (s === 'pessoa') { pessoa.saiuEm = now() - 60000; bus.emit('face', { x: rnd(-0.5, 0.5), y: 0, tam: 0.3 }) }
   if (s === 'saiu') { pessoa.visto = 0; vigiarPresenca() }
   if (s === 'escuro') { luz.simAte = now() + 60000; if (luz.base < 0) luz.base = 120; for (let i = 0; i < 4; i++) atualizarLuz(5) }
@@ -1631,6 +2570,7 @@ $('#btnFalar').onclick = () => alternarFala().catch((e) => pushLog('Fala: ' + e.
 
 setInterval(() => {
   tickComportamento()
+  tickVida()
   if ($('#debug').hidden) return
   const f = (x) => (x >= 0 ? ' ' : '') + x.toFixed(2)
   $('#stats').textContent =
@@ -1650,9 +2590,14 @@ Luz          : ${luz.nivel < 0 ? '— (precisa da câmera)' : `${Math.round(luz.
 Sua voz      : ${P.voz ? `aprendida em ${P.voz.n} fala(s)` : 'ainda não conhece'}${vozDono ? ` · última ${vozDono.tipo}` : ''}
 Microfone    : nível ${vad.nivel.toFixed(3)} · precisa passar de ${Math.max(0.006, vad.piso * 3.5).toFixed(3)} para ouvir uma frase
 Chave do Groq: ${cfg.key ? `salva …${cfg.key.slice(-4)}` : 'não salva'} · dados do site ${dadosProtegidos ? 'protegidos' : dadosProtegidos === false ? 'podem ser apagados pelo navegador' : '?'}
+Conversa     : ${papo.estado}${papo.estado !== 'parado' ? ` (mais ${Math.max(0, Math.round((papo.ate - now()) / 1000))} s)` : ''}${papo.contexto ? ' · contexto ' + papo.contexto.tipo : ''}${pedido.nivel ? ` · pedindo atenção (${pedido.nivel})` : ''}${now() < pedido.emburradoAte ? ' · emburrado' : ''}
+Sons         : ${sons.map((o) => `${o.significado || 'desconhecido'} ×${o.vezes} (medo ${o.medo.toFixed(2)})`).join(' · ') || 'nenhum ainda'}
+Imaginação   : ${imag.ativo ? imag.ativo.tipo : dormindo ? (sono.rem ? 'REM: ' + sono.rem.tipo : `dormindo (REM em ${Math.max(0, Math.round((sono.proxREM - now()) / 60000))} min)`) : '—'} · hoje ${imagHoje.n}/14 · histórias por contar ${memorias.filter((m) => m.historia && !m.contado).length}
+Data         : ${(() => { const d = dataAtiva(); return d ? `${d.nome} (${d.dias >= 0 ? 'faltam ' + d.dias + ' dia(s)' : 'hoje'})` : 'nenhuma perto' })()}${dataSim ? ' · simulando ' + dataSim : ''} · decoração ${decoracaoAtual()?.map((e) => e.el).join(', ') || '—'} · sugestões ${(P.sugestoes || []).length}
+Vestindo     : ${Object.keys(vestido).join(', ') || '—'} · frio ${nivelFrio(clima.temp)} · calor ${nivelCalor(clima.temp)}
 Mãos livres  : ${!cfg.maosLivres ? 'desligado' : !cfg.key ? 'precisa da chave' : vad.verificando ? 'conferindo se era com ele…' : vad.ativo ? 'ouvindo uma frase' : 'esperando o nome'} · ${vad.hora.length}/40 na hora${jogo ? `
 Jogo         : ${jogo.fase} · ${jogo.seq.length} notas` : ''}`
-  $('#diario').textContent = [P.opiniao ? `Sobre ${cfg.dono}: ${P.opiniao}` : '', ...memorias.filter((m) => m.tipo === 'reflexao').slice(0, 6).map((m) => `${new Date(m.t).toLocaleDateString('pt-BR')} · ${m.txt}`)].filter(Boolean).join('\n') || 'Ainda não refletiu. Precisa da chave do Groq e de algumas lembranças.'
+  $('#diario').textContent = [P.opiniao ? `Sobre ${cfg.dono}: ${P.opiniao}` : '', ...memorias.filter((m) => ['reflexao', 'devaneio', 'sonho', 'pesadelo', 'aprendizado', 'sugestao'].includes(m.tipo)).slice(0, 10).map((m) => `${new Date(m.t).toLocaleDateString('pt-BR')} · ${m.txt}`)].filter(Boolean).join('\n') || 'Ainda não refletiu. Precisa da chave do Groq e de algumas lembranças.'
   $('#log').textContent = logLines.join('\n')
 }, 1000)
 
