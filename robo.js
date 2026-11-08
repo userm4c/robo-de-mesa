@@ -17,11 +17,14 @@ const store = {
 }
 
 // ---------------------------------------------------------------- barramento
+const VERSAO = 'v9 · 08/11'
 const logLines = []
+const filaLog = [] // tudo o que aconteceu desde o último envio para o log remoto
 function pushLog(s) {
   const t = new Date().toLocaleTimeString('pt-BR')
   logLines.unshift(`${t}  ${s}`)
   if (logLines.length > 60) logLines.pop()
+  filaLog.push(`${t}  ${s}`); if (filaLog.length > 4000) filaLog.splice(0, 1000)
 }
 const handlers = {}
 const bus = {
@@ -52,6 +55,9 @@ function guardarChave(k, origem) {
 }
 if (!chaveValida(cfg.key)) cfg.key = chaveValida(store.get('chave', '')) ? store.get('chave', '') : ''
 { const m = location.hash.match(/chave=(gsk_[A-Za-z0-9]+)/); if (m) guardarChave(m[1], 'link') }
+{ const m = location.hash.match(/log=((?:github_pat_|ghp_)[A-Za-z0-9_]+)/); if (m && m[1] !== cfg.logToken) { cfg.logToken = m[1]; store.set('cfg', cfg); store.set('logToken', m[1]) } }
+if (!cfg.logToken && store.get('logToken', '')) cfg.logToken = store.get('logToken', '')
+cfg.logRepo ||= 'userm4c/robo-logs'
 let dadosProtegidos = null
 navigator.storage?.persisted?.().then((v) => (dadosProtegidos = v)).catch(() => {})
 // Se os dados do site sumiram, tenta pegar a chave do gerenciador de senhas do Chrome.
@@ -1394,6 +1400,7 @@ async function processarFala(blob, vh) {
 }
 function erroConversa(err) {
   pushLog('Erro: ' + err.message)
+  setTimeout(() => enviarLog('erro na conversa'), 3000)
   legenda('Erro: ' + err.message)
   conversaAte = now() + 1500
   foco = { expr: 'triste', ate: now() + 2500 }; icone = { tipo: 'interrogacao', ate: now() + 2500 }
@@ -2466,7 +2473,7 @@ new MutationObserver(() => document.body.classList.toggle('painel', !$('#debug')
   .observe(document.body, { subtree: true, attributes: true, attributeFilter: ['hidden'] })
 document.querySelectorAll('[data-fechar]').forEach((b) => (b.onclick = () => { $('#debug').hidden = true; $('#cfg').hidden = true }))
 function abrirCfg() {
-  $('#cNome').value = cfg.nome; $('#cDono').value = cfg.dono; $('#cKey').value = cfg.key; $('#cStt').value = cfg.stt; $('#cLegenda').checked = !!cfg.legenda; $('#cMaos').checked = !!cfg.maosLivres
+  $('#cNome').value = cfg.nome; $('#cDono').value = cfg.dono; $('#cKey').value = cfg.key; $('#cStt').value = cfg.stt; $('#cLegenda').checked = !!cfg.legenda; $('#cMaos').checked = !!cfg.maosLivres; $('#cLogToken').value = cfg.logToken || ''
   const sel = $('#cModel'); sel.innerHTML = ''; sel.add(new Option(cfg.model, cfg.model))
   $('#cfg').hidden = false; $('#debug').hidden = true
   if (cfg.key) carregarModelos()
@@ -2493,7 +2500,7 @@ $('#cKey').oninput = () => { if (guardarChave($('#cKey').value, 'colada')) $('#c
 $('#cLink').onclick = async () => {
   const k = $('#cKey').value.trim() || cfg.key
   if (!k) { $('#cMsg').textContent = 'Cole a chave primeiro.'; return }
-  const link = location.origin + location.pathname + '#chave=' + k
+  const link = location.origin + location.pathname + '#chave=' + k + (cfg.logToken ? '&log=' + cfg.logToken : '')
   try { await navigator.clipboard.writeText(link); $('#cMsg').textContent = 'Link copiado. Salve nos favoritos ou crie um atalho na tela inicial com ele. Não compartilhe: ele contém a sua chave.' }
   catch { $('#cMsg').textContent = link }
 }
@@ -2504,6 +2511,12 @@ $('#cKey').onchange = () => {
 }
 $('#cModel').onchange = () => { cfg.model = $('#cModel').value; store.set('cfg', cfg) }
 $('#cMaos').onchange = () => { cfg.maosLivres = $('#cMaos').checked; store.set('cfg', cfg) }
+$('#cLogToken').oninput = () => {
+  const v = $('#cLogToken').value.trim()
+  if (tokenLogValido(v)) { cfg.logToken = v; store.set('cfg', cfg); store.set('logToken', v); $('#cMsg').textContent = 'Token do log salvo. Enviando um teste…'; enviarLog('teste').then(() => ($('#cMsg').textContent = logEnvio.erro ? 'Não consegui enviar: ' + logEnvio.erro : 'Log enviado! O Claude já consegue ler.')) }
+  else if (v) $('#cMsg').textContent = 'Esse não parece um token do GitHub (começa com github_pat_).'
+}
+$('#tEnviarLog').onclick = () => { pushLog('Log remoto: envio manual'); enviarLog('manual').then(() => pushLog(logEnvio.erro ? 'Log remoto: falhou' : 'Log remoto: enviado')) }
 $('#btnJogo').onclick = () => (jogo ? fimDoJogo('parou') : iniciarJogo())
 $('#cSave').onclick = () => {
   Object.assign(cfg, { nome: $('#cNome').value.trim() || 'Robô', dono: $('#cDono').value.trim() || 'Will', key: chaveValida($('#cKey').value) ? $('#cKey').value.trim() : cfg.key, model: $('#cModel').value, stt: $('#cStt').value.trim() || 'whisper-large-v3-turbo', legenda: $('#cLegenda').checked, maosLivres: $('#cMaos').checked })
@@ -2572,9 +2585,14 @@ setInterval(() => {
   tickComportamento()
   tickVida()
   if ($('#debug').hidden) return
+  $('#stats').textContent = textoEstado()
+  $('#diario').textContent = [P.opiniao ? `Sobre ${cfg.dono}: ${P.opiniao}` : '', ...memorias.filter((m) => ['reflexao', 'devaneio', 'sonho', 'pesadelo', 'aprendizado', 'sugestao'].includes(m.tipo)).slice(0, 10).map((m) => `${new Date(m.t).toLocaleDateString('pt-BR')} · ${m.txt}`)].filter(Boolean).join('\n') || 'Ainda não refletiu. Precisa da chave do Groq e de algumas lembranças.'
+  $('#log').textContent = logLines.join('\n')
+}, 1000)
+
+function textoEstado() {
   const f = (x) => (x >= 0 ? ' ' : '') + x.toFixed(2)
-  $('#stats').textContent =
-`Humor do dia : ${nomePAD(humor)} (P${f(humor.P)} A${f(humor.A)} D${f(humor.D)})
+  return `Humor do dia : ${nomePAD(humor)} (P${f(humor.P)} A${f(humor.A)} D${f(humor.D)})
 Emoção agora : ${emo.nome}${foco ? ' · foco ' + foco.expr : ''}${dormindo ? ' · dormindo' : ''}
 Som          : rms ${audio.rms.toFixed(3)} · tom ${audio.pitch ? Math.round(audio.pitch) + ' Hz' : '—'} (${audio.clareza.toFixed(2)})
 Música       : ${audio.musica ? `sim · ${audio.bpm} BPM · ${audio.estilo}` : 'não'} · confiança ${audio.conf.toFixed(2)}
@@ -2596,10 +2614,50 @@ Imaginação   : ${imag.ativo ? imag.ativo.tipo : dormindo ? (sono.rem ? 'REM: '
 Data         : ${(() => { const d = dataAtiva(); return d ? `${d.nome} (${d.dias >= 0 ? 'faltam ' + d.dias + ' dia(s)' : 'hoje'})` : 'nenhuma perto' })()}${dataSim ? ' · simulando ' + dataSim : ''} · decoração ${decoracaoAtual()?.map((e) => e.el).join(', ') || '—'} · sugestões ${(P.sugestoes || []).length}
 Vestindo     : ${Object.keys(vestido).join(', ') || '—'} · frio ${nivelFrio(clima.temp)} · calor ${nivelCalor(clima.temp)}
 Mãos livres  : ${!cfg.maosLivres ? 'desligado' : !cfg.key ? 'precisa da chave' : vad.verificando ? 'conferindo se era com ele…' : vad.ativo ? 'ouvindo uma frase' : 'esperando o nome'} · ${vad.hora.length}/40 na hora${jogo ? `
-Jogo         : ${jogo.fase} · ${jogo.seq.length} notas` : ''}`
-  $('#diario').textContent = [P.opiniao ? `Sobre ${cfg.dono}: ${P.opiniao}` : '', ...memorias.filter((m) => ['reflexao', 'devaneio', 'sonho', 'pesadelo', 'aprendizado', 'sugestao'].includes(m.tipo)).slice(0, 10).map((m) => `${new Date(m.t).toLocaleDateString('pt-BR')} · ${m.txt}`)].filter(Boolean).join('\n') || 'Ainda não refletiu. Precisa da chave do Groq e de algumas lembranças.'
-  $('#log').textContent = logLines.join('\n')
-}, 1000)
+Jogo         : ${jogo.fase} · ${jogo.seq.length} notas` : ''}` + `
+Log remoto   : ${!tokenLogValido(cfg.logToken) ? 'sem token' : logEnvio.erro ? 'erro: ' + logEnvio.erro : logEnvio.ultimo ? `enviado há ${Math.round((Date.now() - logEnvio.ultimo) / 60000)} min` : 'ainda não enviou'} · ${filaLog.length} linha(s) na fila`
+}
+
+// ---------------------------------------------------------------- log remoto (repositório privado no GitHub)
+// A cada 5 min (e na hora, se der erro) o robô manda o que aconteceu para um repositório
+// privado. O Claude lê de lá para achar e corrigir bugs. O token fica só neste celular.
+const tokenLogValido = (k) => /^(github_pat_|ghp_)[A-Za-z0-9_]{20,}$/.test((k || '').trim())
+const logEnvio = { enviando: false, ultimo: 0, ultimoEstado: 0, erro: '' }
+function base64Utf8(txt) {
+  const u8 = new TextEncoder().encode(txt); let b = ''
+  for (let i = 0; i < u8.length; i += 8192) b += String.fromCharCode(...u8.subarray(i, i + 8192))
+  return btoa(b)
+}
+async function enviarLog(motivo = 'periódico') {
+  if (!tokenLogValido(cfg.logToken) || logEnvio.enviando) return
+  const comEstado = motivo !== 'periódico' || Date.now() - logEnvio.ultimoEstado > 10 * 60000
+  if (!filaLog.length && !comEstado) return
+  logEnvio.enviando = true
+  const linhas = filaLog.splice(0), d = new Date()
+  const dia = d.toLocaleDateString('sv'), hora = d.toTimeString().slice(0, 8).replace(/:/g, '-')
+  let txt = `# ${cfg.nome} · ${VERSAO} · ${d.toLocaleString('pt-BR')} · ${motivo}\n# ${navigator.userAgent}\n\n${linhas.join('\n')}\n`
+  if (comEstado) {
+    txt += `\n## Estado\n${textoEstado()}\n\n## Memórias recentes\n${memorias.slice(0, 12).map((m) => `- [${m.tipo}, ${m.imp}] ${m.txt}`).join('\n')}\n`
+    txt += `\n## Sons\n${JSON.stringify(sons.map(({ audio, ...o }) => o))}\n## Decoração e sugestões\n${JSON.stringify({ deco: P.deco, sugestoes: P.sugestoes })}\n`
+  }
+  try {
+    const caminho = `logs/${dia}/${hora}-${Math.random().toString(36).slice(2, 6)}.txt`
+    const r = await fetch(`https://api.github.com/repos/${cfg.logRepo}/contents/${caminho}`, {
+      method: 'PUT', headers: { Authorization: 'Bearer ' + cfg.logToken.trim(), Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: `log ${dia} ${hora} (${motivo})`, content: base64Utf8(txt) }),
+    })
+    if (!r.ok) throw new Error(`GitHub ${r.status}: ${(await r.text()).slice(0, 120)}`)
+    logEnvio.ultimo = Date.now(); logEnvio.erro = ''
+    if (comEstado) logEnvio.ultimoEstado = Date.now()
+  } catch (e) {
+    filaLog.unshift(...linhas.slice(-3000)); logEnvio.erro = e.message
+    logLines.unshift(`${new Date().toLocaleTimeString('pt-BR')}  Log remoto: ${e.message}`)
+  } finally { logEnvio.enviando = false }
+}
+setInterval(() => enviarLog(), 5 * 60000)
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') enviarLog('saiu da tela') })
+window.addEventListener('error', (e) => { pushLog(`ERRO JS: ${e.message} @ ${(e.filename || '').split('/').pop()}:${e.lineno}:${e.colno}`); setTimeout(() => enviarLog('erro'), 2000) })
+window.addEventListener('unhandledrejection', (e) => { pushLog('ERRO (promessa): ' + (e.reason?.stack || e.reason?.message || e.reason)); setTimeout(() => enviarLog('erro'), 2000) })
 
 // ================================================================ acordar
 let wake = null
@@ -2616,7 +2674,8 @@ $('#btnStart').onclick = async () => {
     await recuperarChave()
     pushLog(cfg.key ? `Chave do Groq carregada …${cfg.key.slice(-4)}` : 'Sem chave do Groq salva neste celular')
     conferirModelo()
-    pushLog(`Cérebro→ acordou ${nomePAD(humor)} (dia ${P.dias} de vida)`)
+    pushLog(`Cérebro→ acordou ${nomePAD(humor)} (dia ${P.dias} de vida) · ${VERSAO}`)
+    setTimeout(() => enviarLog('acordou'), 15000)
     somDe(humor.P > 0 ? 'feliz' : 'entediado', 0.5)
     foco = { expr: 'surpreso', ate: now() + 900 }
     if (!cfg.key) pushLog('Dica: ⚙️ → chave do Groq para conversar pelo 🎤')

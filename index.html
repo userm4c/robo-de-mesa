@@ -106,6 +106,7 @@
     <input id="tData" type="date" style="flex:1;min-width:140px">
     <button id="tDecorar">Decorar agora</button>
     <button id="tEsquecerSons" class="danger">Esquecer sons</button>
+    <button id="tEnviarLog">📤 Enviar log agora</button>
   </div>
   <p class="hint">Data vazia = hoje. Escolha uma data perto de uma festa para testar a decoração. "Susto" lá em cima também grava o barulho: três sustos iguais e ele pergunta o que é.</p>
   <label>Diário</label>
@@ -126,6 +127,8 @@
   <label class="check"><input id="cLegenda" type="checkbox"> Legendas: mostrar o que ele entendeu e o que quis dizer</label>
   <label class="check"><input id="cMaos" type="checkbox"> Mãos livres: chamar pelo nome, sem apertar o 🎤</label>
   <p class="hint">Com mãos livres, toda frase falada perto dele vai para a transcrição do Groq (até 40 por hora) para ele saber se chamaram o nome. O que não for com ele é descartado.</p>
+  <label>Token do GitHub para enviar o log (fica só neste celular)</label><input id="cLogToken" type="password" autocomplete="off" placeholder="github_pat_…">
+  <p class="hint">Com ele, o robô manda o log para o repositório privado userm4c/robo-logs a cada 5 min (e na hora, se der erro), para o Claude analisar.</p>
   <div class="row">
     <button id="cSave">Salvar</button>
     <button id="cClose">Fechar</button>
@@ -137,6 +140,6 @@
 </div>
 
 <video id="cam" playsinline muted hidden></video>
-<script type="module" src="robo.js?v=8"></script>
+<script type="module" src="robo.js?v=9"></script>
 </body>
 </html>
