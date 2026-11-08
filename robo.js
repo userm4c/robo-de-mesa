@@ -33,7 +33,7 @@ const bus = {
 }
 
 // ---------------------------------------------------------------- configurações
-const cfg = Object.assign({ nome: 'Robô', dono: 'Will', key: '', model: 'llama-3.3-70b-versatile', stt: 'whisper-large-v3-turbo', legenda: false, maosLivres: true }, store.get('cfg', {}))
+const cfg = Object.assign({ nome: 'Robô', dono: 'Will', key: '', model: 'openai/gpt-oss-120b', stt: 'whisper-large-v3-turbo', legenda: false, maosLivres: true }, store.get('cfg', {}))
 // Link pessoal com a chave: …/robo-de-mesa/#chave=gsk_… O que vem depois do # nunca é
 // enviado para o servidor; fica só no celular (no favorito ou no atalho).
 { const m = location.hash.match(/chave=(gsk_[A-Za-z0-9]+)/); if (m && m[1] !== cfg.key) { cfg.key = m[1]; store.set('cfg', cfg) } }
@@ -89,6 +89,7 @@ if (!humor || humor.dia !== hoje) {
   P.dias++
   store.set('humor', humor); store.set('pers', P)
 }
+humor.P = clamp(humor.P, -0.4, 0.9) // não acorda travado no extremo
 humor.nomeInicial = nomePAD(humor)
 
 const imp = { P: 0, A: 0, D: 0 } // impulso das emoções, decai
@@ -156,7 +157,7 @@ function ehNoite() { const h = horaDoDia(); return h >= 23 || h < 7 }
 // Quanto cada necessidade está fora da faixa boa (0 = tudo certo).
 function desconforto() {
   let d = 0
-  for (const k of Object.keys(FAIXA)) { const [lo, hi] = FAIXA[k]; if (N[k] < lo) d += (lo - N[k]) / lo; else if (N[k] > hi) d += (N[k] - hi) / (1 - hi) }
+  for (const k of Object.keys(FAIXA)) { const [lo, hi] = FAIXA[k]; if (N[k] < lo) d += (lo - N[k]) / lo; else if (N[k] > hi) d += 0.4 * (N[k] - hi) / (1 - hi) }
   return d
 }
 
@@ -169,6 +170,8 @@ function tickCerebro(dt) {
   // O humor anda devagar em direção ao que ele sente (≈30 min).
   humor.P += (e.P - humor.P) * dt / 1800
   humor.D += (e.D - humor.D) * dt / 1800
+  // Homeostase: o humor sempre volta devagar (≈40 min) para o jeito normal dele, e nunca trava no extremo.
+  humor.P = clamp(humor.P + (0.1 + (P.afeto - 0.5) * 0.4 - humor.P) * dt / 2400, -0.75, 0.9)
 
   // Necessidades andam com o tempo. Extrovertido sente falta de gente mais rápido;
   // curioso enjoa mais rápido da mesmice.
@@ -753,7 +756,7 @@ function ligarEscuta(src) {
     }
     vad.chunks.push(x)
     if (rms > Math.max(0.004, vad.piso * 2)) vad.ultimaFala = t
-    if (!pode) { vad.ativo = false; vad.chunks = []; return } // ele mesmo fez barulho, ou começou outra coisa
+    if (gravando || jogo || audio.musica) { vad.ativo = false; vad.chunks = []; return } // começou outra coisa
     if (t - vad.ultimaFala > 1000 || t - vad.ini > 9000) fimDaFrase(t)
   }
 }
@@ -781,18 +784,27 @@ function chamouPeloNome(texto) {
   return null
 }
 const ALUCINACAO = /obrigad[oa] por assistir|legendas? (pela|por|da)|amara\.org|inscreva-se|se inscreva|tchau,? tchau/i
+// Se a frase não tinha palavras (era cantarolar ou assobio), aí sim ele reage à melodia.
+function soltarMelodia(eraFala) {
+  const m = vad.melodiaPendente; vad.melodiaPendente = null
+  if (!m || eraFala) return
+  bus.emit(m.tipo, { label: 'depois de conferir' })
+  bus.emit('melodia', { label: `${m.notas.length} notas`, ...m })
+}
 async function fimDaFrase(t) {
   vad.ativo = false
   const chunks = vad.chunks, dur = vad.ultimaFala - vad.ini, resumo = prosoResumo(), seguindo = vad.ini < vad.seguirAte
   vad.chunks = []
-  if (dur < 180 || vad.vozes < 2) { if (dur >= 150) pushLog(`Mãos livres: descartei um som (${(dur / 1000).toFixed(1)} s, ${vad.vozes} trechos com voz)`); return } // barulho, não voz
+  if (dur < 180 || vad.vozes < 2) { setTimeout(() => soltarMelodia(false)); if (dur >= 150) pushLog(`Mãos livres: descartei um som (${(dur / 1000).toFixed(1)} s, ${vad.vozes} trechos com voz)`); return } // barulho, não voz
   vad.hora = vad.hora.filter((x) => t - x < 3600000)
-  if (vad.hora.length >= 40) { pushLog('Mãos livres: limite de 40 frases por hora (plano gratuito)'); return }
+  if (vad.hora.length >= 40) { setTimeout(() => soltarMelodia(false)); pushLog('Mãos livres: limite de 40 frases por hora (plano gratuito)'); return }
   vad.hora.push(t)
   vad.verificando = true
+  let eraFala = false
   try {
     const texto = await transcrever(paraWav(chunks, actx.sampleRate))
-    if (!texto || ALUCINACAO.test(texto)) return
+    if (!texto || ALUCINACAO.test(texto) || !/[a-zà-ú]{2}/i.test(texto)) return
+    eraFala = true
     const chamado = chamouPeloNome(texto)
     if (!chamado && !seguindo) { pushLog(`(ouviu, não era com ele) ${texto.slice(0, 60)}`); return }
     const vh = humorDaVoz(resumo)
@@ -802,7 +814,7 @@ async function fimDaFrase(t) {
       return
     }
     await responder(chamado ? chamado.resto : texto, vh)
-  } catch (e) { pushLog('Mãos livres: ' + e.message) } finally { vad.verificando = false }
+  } catch (e) { pushLog('Mãos livres: ' + e.message) } finally { vad.verificando = false; soltarMelodia(eraFala) }
 }
 // WAV de 16 kHz (o que o Whisper usa por dentro), com o volume normalizado.
 function paraWav(chunks, srIn) {
@@ -1069,9 +1081,14 @@ bus.on('estilo', () => {
   P.gostos[audio.estilo] = clamp(gosto + rnd(-0.01, 0.04) * (0.5 + P.curiosidade), -1, 1)
 })
 bus.on('musica_parou', () => evento({ label: 'a música acabou', P: -0.1, A: -0.2, interesse: 0.3, som: false }))
-bus.on('assobio', () => { evento({ label: 'alguém assobiou', P: 0.35, A: 0.45, interesse: 0.8, tipo: 'assobio', social: 0.03, expr: 'curioso', icone: 'nota', som: 'curioso', gesto: 'olhar_em_volta', dur: 2500 }); P.gostos.assobio = clamp(P.gostos.assobio + 0.02, -1, 1) })
-bus.on('cantarolar', () => { evento({ label: 'alguém cantarolando', P: 0.4, A: 0.3, interesse: 0.75, tipo: 'cantarolar', social: 0.03, expr: 'contente', icone: 'nota', som: 'contente', dur: 3000 }); P.gostos.cantarolar = clamp(P.gostos.cantarolar + 0.02, -1, 1) })
+bus.on('assobio', () => {
+  if (vad.ativo || vad.verificando) return // pode ser fala; decide depois da transcrição
+  evento({ label: 'alguém assobiou', P: 0.35, A: 0.45, interesse: 0.8, tipo: 'assobio', social: 0.03, expr: 'curioso', icone: 'nota', som: 'curioso', gesto: 'olhar_em_volta', dur: 2500 }); P.gostos.assobio = clamp(P.gostos.assobio + 0.02, -1, 1) })
+bus.on('cantarolar', () => {
+  if (vad.ativo || vad.verificando) return
+  evento({ label: 'alguém cantarolando', P: 0.4, A: 0.3, interesse: 0.75, tipo: 'cantarolar', social: 0.03, expr: 'contente', icone: 'nota', som: 'contente', dur: 3000 }); P.gostos.cantarolar = clamp(P.gostos.cantarolar + 0.02, -1, 1) })
 bus.on('melodia', ({ notas, tipo }) => {
+  if (vad.ativo || vad.verificando) { vad.melodiaPendente = { notas, tipo }; return } // espera saber se era fala
   if (dormindo || gravando) return
   const gosto = P.gostos[tipo] || 0
   if (Math.random() < 0.3 + P.extroversao * 0.5 + gosto * 0.2) {
@@ -1098,7 +1115,7 @@ bus.on('sua_vez', () => { // proto-diálogo: você fala, ele responde com bipes 
     N.social = clamp(N.social + 0.03, 0, 1)
   }, cfg.maosLivres && cfg.key ? 1200 : 350)
 })
-bus.on('voz', () => evento({ label: 'ouvi alguém falar', tipo: 'voz', P: 0.05, A: 0.25, interesse: 0.5 * P.curiosidade + 0.2, expr: 'curioso', som: false, dur: 1500 }))
+bus.on('voz', () => !vad.ativo && !vad.verificando && evento({ label: 'ouvi alguém falar', tipo: 'voz', P: 0.05, A: 0.25, interesse: 0.5 * P.curiosidade + 0.2, expr: 'curioso', som: false, dur: 1500 }))
 
 // ================================================================ S3: OLHOS (câmera)
 const pessoa = { presente: false, x: 0, y: 0, tam: 0, visto: 0, desde: 0, saiuEm: now() }
@@ -1294,6 +1311,47 @@ function erroConversa(err) {
   foco = { expr: 'triste', ate: now() + 2500 }; icone = { tipo: 'interrogacao', ate: now() + 2500 }
   somDe('triste', 0.4)
 }
+// Formato da resposta preso às listas: o modelo não consegue inventar gesto, emoção ou ícone.
+const ESQUEMA = () => ({
+  type: 'object', additionalProperties: false,
+  required: ['gesto', 'emocao', 'intensidade', 'icones', 'numero', 'pensamento', 'afeto', 'lembrar', 'importancia', 'acao'],
+  properties: {
+    gesto: { type: 'string', enum: [...Object.keys(GESTOS), 'nenhum'] }, emocao: { type: 'string', enum: EMOCOES }, intensidade: { type: 'number' },
+    icones: { type: 'array', items: { type: 'string', enum: Object.keys(ICONES) } }, numero: { type: 'string' }, pensamento: { type: 'string' },
+    afeto: { type: 'number' }, lembrar: { type: 'string' }, importancia: { type: 'integer' }, acao: { type: 'string', enum: ['', 'jogo_melodia'] },
+  },
+})
+const formatoOk = {} // por modelo: qual formato o Groq aceitou
+async function pedirReacao(messages) {
+  const base = { model: cfg.model, temperature: 0.5, max_completion_tokens: 1000, messages }
+  if (/gpt-oss/i.test(cfg.model)) base.reasoning_effort = 'low'
+  const formatos = [{ type: 'json_schema', json_schema: { name: 'reacao', strict: /gpt-oss/i.test(cfg.model), schema: ESQUEMA() } }, { type: 'json_object' }, null]
+  let erro
+  for (let i = formatoOk[cfg.model] ?? 0; i < formatos.length; i++) {
+    try {
+      const r = await groq('/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(formatos[i] ? { ...base, response_format: formatos[i] } : base) })
+      formatoOk[cfg.model] = i
+      return r
+    } catch (e) { erro = e; if (!/Groq 400/.test(e.message)) throw e }
+  }
+  throw erro
+}
+// Só modelos grandes, bons em português e que obedecem o formato.
+const MODELOS_BONS = [/gpt-oss-120b/i, /kimi-k2/i, /llama-4-maverick/i, /llama-3\.3-70b/i, /gpt-oss-20b/i]
+const modeloBom = (id) => MODELOS_BONS.some((re) => re.test(id))
+async function conferirModelo() {
+  if (!cfg.key) return
+  try {
+    const { data } = await groq('/models')
+    const ids = data.map((m) => m.id)
+    if (ids.includes(cfg.model) && modeloBom(cfg.model)) return pushLog(`Modelo de conversa: ${cfg.model}`)
+    const melhor = MODELOS_BONS.map((re) => ids.find((i) => re.test(i))).find(Boolean)
+    if (!melhor) return
+    pushLog(`Troquei o modelo de conversa: ${cfg.model} → ${melhor}`)
+    cfg.model = melhor; store.set('cfg', cfg)
+  } catch (e) { pushLog('Modelos: ' + e.message) }
+}
+
 // O que ele percebe de você agora (voz, rosto, luz), para o Groq responder de acordo.
 function percepcao(vh) {
   const d = cfg.dono, cara = humorDoRosto(), out = []
@@ -1355,15 +1413,9 @@ Responda SÓ com JSON: {"gesto": "...", "emocao": "...", "intensidade": 0 a 1, "
       ...ex('Você quer dormir?', { gesto: 'nao', emocao: 'feliz', intensidade: 0.5, icones: ['dormir', 'errado'], numero: '', pensamento: 'Ainda não, tô ligadão.', afeto: 0, lembrar: '', importancia: 1 }),
     ].map((m) => ({ ...m, content: m.content.replaceAll('Will', cfg.dono) }))
     conversa.push({ role: 'user', content: `${cfg.dono} disse: "${text}"` })
-    const r = await groq('/chat/completions', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: cfg.model, temperature: 0.7, max_tokens: 300, response_format: { type: 'json_object' }, messages: [{ role: 'system', content: sys }, ...exemplos, ...conversa.slice(-10)] }),
-    }).catch(async (e) => { // modelo sem modo JSON: tenta de novo sem ele
-      if (!/json|response_format/i.test(e.message)) throw e
-      return groq('/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: cfg.model, temperature: 0.7, max_tokens: 300, messages: [{ role: 'system', content: sys }, ...exemplos, ...conversa.slice(-10)] }) })
-    })
+    const r = await pedirReacao([{ role: 'system', content: sys }, ...exemplos, ...conversa.slice(-10)])
     const bruto = r.choices[0].message.content
-    pushLog('Groq: ' + bruto.slice(0, 300))
+    pushLog(`Groq (${cfg.model.split('/').pop()}): ${bruto.slice(0, 300)}`)
     const j = JSON.parse((bruto.match(/\{[\s\S]*\}/) || [bruto])[0])
     conversa.push({ role: 'assistant', content: bruto }); conversa = conversa.slice(-10)
     const nome = EMOCOES.includes(j.emocao) ? j.emocao : 'curioso'
@@ -1377,13 +1429,16 @@ Responda SÓ com JSON: {"gesto": "...", "emocao": "...", "intensidade": 0 a 1, "
       data: hoje.toLocaleDateString('pt-BR', { day: 'numeric', month: 'numeric' }),
       temp: `${clima.temp}°`, umid: `${clima.umid}%`,
     }
-    if (j.numero) j.numero = String(j.numero).replace(/\{(hora|data|temp|umid)\}/g, (_, x) => valores[x])
+    // Número: só os do robô (hora, data, sensores) ou uma contagem curta. Hora inventada pelo modelo não passa.
+    j.numero = String(j.numero || '').trim()
+    if (/\{(hora|data|temp|umid)\}/.test(j.numero)) j.numero = j.numero.replace(/\{(hora|data|temp|umid)\}/g, (_, x) => valores[x])
+    else if (!/^\d{1,4}\+?$/.test(j.numero)) j.numero = ''
     // Garantia: pergunta de hora ou data sempre mostra o relógio do celular, mesmo se o modelo errar.
     if (/que horas|hor[áa]rio|horas s[ãa]o/i.test(text)) j.numero = valores.hora
     else if (/que dia [ée] hoje|qual (a )?data|dia de hoje/i.test(text)) j.numero = valores.data
     legenda(`${cfg.nome}: ${j.pensamento || '…'}`)
     pushLog(`${cfg.nome}: ${j.pensamento || '…'} [${gest} · ${nome} ${k.toFixed(1)}${icns.length ? ' · ' + icns.map((x) => ICONES[x]).join('') : ''}${j.numero ? ' · ' + j.numero : ''}]`)
-    P.afeto = clamp(P.afeto + clamp(+j.afeto || 0, -0.05, 0.05), 0.05, 0.95)
+    P.afeto = clamp(P.afeto + clamp(+j.afeto || 0, -0.02, 0.02), 0.05, 0.95)
     if (j.lembrar) lembrar(j.lembrar, clamp(Math.round(+j.importancia || 4), 1, 10))
     evoluir('extroversao', 0.003)
     foco = null; icone = null
@@ -1421,7 +1476,7 @@ Responda SÓ com JSON: {"reflexoes": [1 a 3 frases curtas do diário, conclusõe
 Mude pouco e só com motivo nas lembranças. Personalidade muda devagar.`
     const r = await groq('/chat/completions', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: cfg.model, temperature: 0.7, max_tokens: 400, response_format: { type: 'json_object' }, messages: [{ role: 'system', content: sys }] }),
+      body: JSON.stringify({ model: cfg.model, temperature: 0.7, max_completion_tokens: 1500, ...(/gpt-oss/i.test(cfg.model) ? { reasoning_effort: 'low' } : {}), response_format: { type: 'json_object' }, messages: [{ role: 'system', content: sys }] }),
     })
     const j = JSON.parse(r.choices[0].message.content)
     for (const txt of (j.reflexoes || []).slice(0, 3)) { lembrar(String(txt).slice(0, 200), 8, 'reflexao'); pushLog('Diário: ' + txt) }
@@ -1447,13 +1502,14 @@ function abrirCfg() {
 async function carregarModelos() {
   try {
     const { data } = await groq('/models')
-    const ids = data.map((m) => m.id).filter((id) => !/whisper|guard|tts|orpheus|playai|distil/i.test(id)).sort()
+    const todos = data.map((m) => m.id).filter((id) => !/whisper|guard|tts|orpheus|playai|distil/i.test(id))
+    const ids = todos.filter(modeloBom).length ? MODELOS_BONS.flatMap((re) => todos.filter((i) => re.test(i))) : todos.sort()
     const sel = $('#cModel'); sel.innerHTML = ''
     for (const id of ids) sel.add(new Option(id, id, false, id === cfg.model))
     if (!ids.includes(cfg.model)) {
-      const ordem = [/gpt-oss-120b/i, /llama-3\.3-70b/i, /kimi-k2/i, /llama-4-maverick/i, /qwen3-32b/i, /70b/i, /llama/i]
-      sel.value = ordem.map((re) => ids.find((i) => re.test(i))).find(Boolean) || ids[0]
-      $('#cMsg').textContent = `O modelo ${cfg.model} não existe mais no Groq. Escolhi ${sel.value}; toque em Salvar.`
+      sel.value = ids[0]
+      cfg.model = ids[0]; store.set('cfg', cfg)
+      $('#cMsg').textContent = `Troquei o modelo para ${ids[0]} (o anterior não existe ou responde mal em português).`
     }
     const stts = data.map((m) => m.id).filter((id) => /whisper/i.test(id))
     if (stts.length && !stts.includes(cfg.stt)) $('#cStt').value = stts.find((i) => /turbo/.test(i)) || stts[0]
@@ -1562,6 +1618,7 @@ $('#btnStart').onclick = async () => {
     await ligarOuvido(micStream)
     $('#start').hidden = true
     manterTela()
+    conferirModelo()
     pushLog(`Cérebro→ acordou ${nomePAD(humor)} (dia ${P.dias} de vida)`)
     somDe(humor.P > 0 ? 'feliz' : 'entediado', 0.5)
     foco = { expr: 'surpreso', ate: now() + 900 }
