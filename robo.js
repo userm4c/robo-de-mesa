@@ -17,7 +17,7 @@ const store = {
 }
 
 // ---------------------------------------------------------------- barramento
-const VERSAO = 'v11 · 08/11'
+const VERSAO = 'v12 · 08/11'
 const logLines = []
 const filaLog = [] // tudo o que aconteceu desde o último envio para o log remoto
 function pushLog(s) {
@@ -139,6 +139,8 @@ let ultimoEvento = now()
 // de 1 a 10. Para lembrar, conta o quanto é recente e o quanto é importante.
 let impDesdeReflexao = store.get('impReflexao', 0)
 function lembrar(txt, imp = 4, tipo = 'fato') {
+  const igual = memorias.slice(0, 15).find((m) => m.txt === txt && Date.now() - m.t < 6 * 3600000)
+  if (igual) { igual.imp = Math.min(10, igual.imp + 1); igual.t = Date.now(); store.set('memorias', memorias); return }
   memorias.unshift({ t: Date.now(), txt, imp, tipo })
   // Guarda as 120 mais valiosas (recentes ou importantes).
   if (memorias.length > 120) memorias = memorias.sort((a, b) => valorMemoria(b) - valorMemoria(a)).slice(0, 120).sort((a, b) => b.t - a.t)
@@ -161,7 +163,7 @@ function evento(e) {
     hab[e.tipo] = h + 1
   }
   // Necessidades: novidades alimentam o estímulo; gente alimenta o social.
-  N.estimulo = clamp(N.estimulo + 0.06 * (e.interesse || 0) * Math.min(1, ganho), 0, 1)
+  N.estimulo = clamp(N.estimulo + 0.06 * (e.interesse || 0) * Math.min(1, ganho) * (1 - N.estimulo * 0.7), 0, 1) // quanto mais cheio, menos enche
   if (e.social) N.social = clamp(N.social + e.social, 0, 1)
   if (e.confianca) P.confianca = clamp(P.confianca + e.confianca, 0.05, 0.95)
   imp.P = clamp(imp.P + (e.P || 0) * ganho, -1.6, 1.6)
@@ -206,7 +208,7 @@ function ehNoite() { const h = horaDoDia(); return h >= 23 || h < 7 }
 // Quanto cada necessidade está fora da faixa boa (0 = tudo certo).
 function desconforto() {
   let d = 0
-  for (const k of Object.keys(FAIXA)) { const [lo, hi] = FAIXA[k]; if (N[k] < lo) d += (lo - N[k]) / lo; else if (N[k] > hi && !(k === 'social' && now() - conversouEm < 180000)) d += 0.4 * (N[k] - hi) / (1 - hi) }
+  for (const k of Object.keys(FAIXA)) { const [lo, hi] = FAIXA[k]; if (N[k] < lo) d += (lo - N[k]) / lo; else if (N[k] > hi && !((k === 'social' || k === 'estimulo') && (now() - conversouEm < 180000 || jogo))) d += 0.4 * (N[k] - hi) / (1 - hi) } // conversar e brincar não incomodam
   return d
 }
 
@@ -292,10 +294,10 @@ const COMPORTAMENTOS = {
     nota: () => (N.social > FAIXA.social[1] && P.extroversao < 0.45 && now() - conversouEm > 60000 ? 0.8 + (1 - P.extroversao) * 0.4 : 0),
     fazer: () => { evento({ label: 'muita atenção, quero um tempinho', P: -0.05, A: -0.1, interesse: 0.3, expr: 'timido', gesto: 'timido', som: false, dur: 3500 }); N.social -= 0.05 },
   },
-  sobrecarregado: { // novidade demais de uma vez
-    cd: 120000,
-    nota: () => (N.estimulo > FAIXA.estimulo[1] + 0.05 ? 0.85 : 0),
-    fazer: () => { evento({ label: 'coisa demais acontecendo', P: -0.15, A: 0.2, interesse: 0.3, expr: 'tonto', gesto: 'tonto', som: 'neutro', dur: 2500 }); N.estimulo -= 0.08 },
+  sobrecarregado: { // novidade demais de uma vez (sozinho, sem conversa)
+    cd: 10 * 60000,
+    nota: () => (N.estimulo > 0.95 && now() - conversouEm > 120000 && !jogo && papo.estado === 'parado' ? 0.85 : 0),
+    fazer: () => { evento({ label: 'coisa demais acontecendo, um respiro', P: -0.05, A: -0.3, interesse: 0.2, expr: 'entediado', gesto: 'suspiro', som: false, dur: 2500 }); N.estimulo -= 0.2 },
   },
   cochilar: { cd: 600000, nota: () => (N.energia < 0.3 && !temGente() ? 0.8 : 0), fazer: () => dormir('cansado') },
   nada: { cd: 0, nota: () => 0.55, fazer: () => {} },
@@ -411,7 +413,7 @@ const ICONES = {
   ok: '👍', nao_ok: '👎', certo: '✅', errado: '❌', coracao: '❤️', coracao_partido: '💔', abraco: '🤗', musculo: '💪',
   cerebro: '🧠', olhos: '👀', dormir: '💤', doente: '🤒', remedio: '💊', cachorro: '🐶', gato: '🐱', planta: '🌱',
   flor: '🌸', carro: '🚗', aviao: '✈️', mundo: '🌍', brasil: '🇧🇷', robo: '🤖', pessoa: '🧑', familia: '👪',
-  pergunta: '❓', raio: '⚡', bateria: '🔋', wifi: '📶', seta_cima: '⬆️', seta_baixo: '⬇️', mais: '➕', menos: '➖', fantasma: '👻',
+  arvore: '🎄', sino: '🔔', vela: '🕯️', termometro: '🌡️', coroa: '👑', sorriso: '😊', praia: '🏖️', luz: '💡', pergunta: '❓', raio: '⚡', bateria: '🔋', wifi: '📶', seta_cima: '⬆️', seta_baixo: '⬇️', mais: '➕', menos: '➖', fantasma: '👻',
 }
 let balao = null // {itens, numero, ate}
 const olhar = { x: 0, y: 0, vx: 0, vy: 0, tx: 0, ty: 0, mx: 0, my: 0, proxSacada: 0, proxMicro: 0 }
@@ -1459,7 +1461,7 @@ async function pedirJSON(messages, nome, esquema, extra = {}) {
           const r = await groq('/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(formatos[i] ? { ...base, response_format: formatos[i] } : base) })
           formatoOk[chave] = i; r.modelo = modelo
           return r
-        } catch (e) { erro = e; if (!/Groq 400/.test(e.message) || i === formatos.length - 1) throw e }
+        } catch (e) { erro = e; if (!/Groq 400/.test(e.message) || i === formatos.length - 1) throw e; pushLog(`Groq: formato ${formatos[i]?.type} recusado por ${modelo.split('/').pop()}: ${e.message.slice(0, 260)}`) }
       }
     } catch (e) {
       erro = e
@@ -1549,10 +1551,11 @@ Coisas que você lembra:
 ${recentes}
 ${estadoVida()}
 
-${/gpt-oss/i.test(modeloLivre(cfg.model)) ? '(Gestos, emoções, ícones e emotes: só os permitidos pelo formato da resposta.)' : `GESTOS: ${Object.keys(GESTOS).join(', ')}, nenhum
+Use SÓ estes nomes (qualquer outro é ignorado):
+GESTOS: ${Object.keys(GESTOS).join(', ')}, nenhum
 EMOÇÕES: ${EMOCOES.join(', ')}
 ÍCONES: ${Object.keys(ICONES).join(', ')}
-EMOTES: ${Object.keys(EMOTES).join(', ')}`}
+EMOTES: ${Object.keys(EMOTES).join(', ')}
 ${sobreDeco ? `DATAS (ids): ${DATAS.map((d) => `${d.id} (${nomeData(d.id)})`).join(', ')}
 ELEMENTOS de decoração: ${ELEMENTOS.join(', ')}. CORES: ${Object.entries(NOME_COR).map(([k, v]) => `${k}=${v}`).join(', ')}` : ''}
 
@@ -1606,6 +1609,7 @@ Responda SÓ com JSON: {"gesto": "...", "emocao": "...", "intensidade": 0 a 1, "
     if (ctx?.tipo === 'som') { if (j.som_significado) aprenderSom(ctx.somId, j.som_significado, icns); else if ((ctx.tentativas || 0) < 1) papo.contexto = { ...ctx, tentativas: (ctx.tentativas || 0) + 1 } }
     if (j.opiniao_deco === 'gostou' || j.opiniao_deco === 'nao_gostou') opiniaoDeco(j.opiniao_deco)
     if (j.sugestao?.ideia) receberSugestao(j.sugestao)
+    else if (sobreDeco && /\b(coloc|adicion|p[õo]e|p[õo]r|bota|decor|enfeit|acrescent|faz|faça)/i.test(text)) receberSugestao({ data: dataAtiva()?.id || '', ideia: text.slice(0, 100), elementos: [], cores: [] })
     if (/^\d{1,2}\/\d{1,2}$/.test(j.aniversario_dono || '') && P.anivDono !== j.aniversario_dono) { P.anivDono = j.aniversario_dono; lembrar(`O aniversário de ${cfg.dono} é ${j.aniversario_dono}`, 8); store.set('pers', P) }
     if (ctx?.tipo === 'pesadelo' && v[0] > 0.2) { P.confianca = clamp(P.confianca + 0.02, 0.05, 0.95); lembrar(`${cfg.dono} me consolou depois de um pesadelo`, 7) }
     const acoes = { jogo_melodia: iniciarJogo, repetir_som: repetirUltimoSom, contar_historia: () => contarHistoria(), boa_noite: ritualBoaNoite, toca_aqui: comecarTocaAqui, devanear: () => devanear(true), decorar: () => decorar(true) }
@@ -1838,7 +1842,7 @@ function desenharAcessorios(t) {
 }
 
 // ---------------------------------------------------------------- moldura decorada (datas comemorativas)
-const ELEMENTOS = ['luzes', 'neve', 'bandeirinhas', 'confete', 'serpentina', 'fogos', 'aboboras', 'fantasmas', 'coracoes', 'baloes', 'estrelas', 'fogueira', 'ovos', 'flores']
+const ELEMENTOS = ['arvore', 'luzes', 'neve', 'bandeirinhas', 'confete', 'serpentina', 'fogos', 'aboboras', 'fantasmas', 'coracoes', 'baloes', 'estrelas', 'fogueira', 'ovos', 'flores']
 const MINI = {
   abobora: ['...ee...', '.oooooo.', 'ookookoo', 'oooooooo', 'okkkkkko', '.oooooo.'],
   fantasminha: ['..wwww..', '.wwwwww.', 'wwkwwkww', 'wwwwwwww', 'wwwkkwww', 'wwwwwwww', 'w.ww.ww.'],
@@ -1848,6 +1852,7 @@ const MINI = {
   fogueira: ['...r....', '..ror...', '.royor..', '.royyor.', 'rooyyoor', '.nnnnnn.', 'nn.nn.nn'],
   ovo: ['.ppp.', 'ppppp', 'yyyyy', 'ppppp', 'bbbbb', 'ppppp', '.ppp.'],
   flor: ['.p.p.', 'ppypp', '.p.p.', '..g..', '.gg..'],
+  arvore: ['....y....', '....g....', '...ggg...', '..ggrgg..', '...ggg...', '..ggggg..', '.ggbgggg.', '..ggggg..', '.gggggyg.', 'ggrgggggg', '....n....', '...nnn...'],
 }
 const cor = (cs, i, padrao) => { const l = cs?.length ? cs : padrao; return PALETA[l[i % l.length]] }
 const tr = (cs, i, de) => (cs?.length ? { [de]: cs[i % cs.length] } : null)
@@ -1917,6 +1922,7 @@ const MOLDURA = {
   estrelas(t, cs) { perimetro(30).forEach(([x, y], i) => { const brilho = 0.3 + 0.7 * Math.abs(Math.sin(t / 500 + i * 1.7)); desenharSprite(MINI.estrela, x, y, 2, tr(cs, i, 'y'), brilho) }) },
   fogueira(t, cs) { [[20, 222], [220, 222]].forEach(([x, y], i) => desenharSprite(MINI.fogueira, x, y, 3, Math.floor(t / 150 + i) % 2 ? { o: 'y', y: 'o' } : null)) },
   ovos(t, cs) { [[16, 224], [30, 226], [212, 226], [226, 224]].forEach(([x, y], i) => desenharSprite(MINI.ovo, x, y, 2, tr(cs, i, 'p'))) },
+  arvore(t, cs) { [[22, 210], [218, 210]].forEach(([x, y], i) => desenharSprite(MINI.arvore, x, y, 3, Math.floor(t / 500 + i) % 2 ? { r: 'y', b: 'r', y: 'w' } : (cs?.length ? { g: cs[0] } : null))) },
   flores(t, cs) { perimetro(34).forEach(([x, y], i) => desenharSprite(MINI.flor, x, y + Math.sin(t / 600 + i) * 1, 2, tr(cs, i, 'p'))) },
 }
 let decoAlpha = 1, decoEntrada = 0
@@ -2422,6 +2428,7 @@ function opiniaoDeco(op) {
 }
 function receberSugestao(s) {
   const ativa = dataAtiva()
+  if (!s.elementos?.length) s = { ...s, elementos: elementosDoTexto(s.ideia) } // palavras conhecidas viram elementos na hora
   const sug = { id: Date.now(), data: s.data || ativa?.id || '', ideia: String(s.ideia).slice(0, 140), elementos: (s.elementos || []).filter((e) => ELEMENTOS.includes(e)).slice(0, 3), cores: (s.cores || []).filter((c) => PALETA[c]).slice(0, 4), estado: 'guardada', t: Date.now() }
   P.sugestoes = [...(P.sugestoes || []), sug].slice(-30)
   lembrar(`${cfg.dono} sugeriu para ${nomeData(sug.data) || 'a decoração'}: ${sug.ideia}`, 6, 'sugestao')
@@ -2432,6 +2439,8 @@ function receberSugestao(s) {
   else if (agora) setTimeout(() => aplicarSugestao(sug), 4500)
   else setTimeout(() => evento({ label: `guardei sua ideia para ${nomeData(sug.data) || 'depois'}`, P: 0.2, interesse: 0.5, expr: 'contente', gesto: 'sim', forcarGesto: true, icones: ['calendario', 'ok'], dur: 2500 }), 4500)
 }
+const PALAVRAS_ELEMENTO = { arvore: /[áa]rvore|pinheiro/i, estrelas: /estrel/i, neve: /neve|flocos/i, luzes: /luz|luzes|pisca/i, coracoes: /cora[çc]/i, baloes: /bal[ãa]o|bal[õo]es|bexiga/i, confete: /confete/i, serpentina: /serpentina/i, fogos: /fogos/i, flores: /flor/i, fantasmas: /fantasma/i, aboboras: /ab[óo]bora/i, bandeirinhas: /bandeir/i, fogueira: /fogueira/i, ovos: /ovo/i }
+const elementosDoTexto = (t) => Object.entries(PALAVRAS_ELEMENTO).filter(([, re]) => new RegExp('(^|[^a-zà-ú])(' + re.source + ')', 'i').test(t || '')).map(([el]) => el).slice(0, 3) // palavra inteira: "decoração" não é "coração"
 function aplicarSugestao(sug) {
   if (!sug.elementos.length) return evento({ label: `ainda não sei desenhar "${sug.ideia}"`, P: -0.05, interesse: 0.4, expr: 'timido', gesto: 'nao_sei', forcarGesto: true, icones: ['pergunta'], dur: 2500 })
   const d = dataAtiva(); if (!d) return
