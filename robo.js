@@ -33,7 +33,7 @@ const bus = {
 }
 
 // ---------------------------------------------------------------- configurações
-const cfg = Object.assign({ nome: 'Robô', dono: 'Will', key: '', model: 'llama-3.3-70b-versatile', stt: 'whisper-large-v3-turbo' }, store.get('cfg', {}))
+const cfg = Object.assign({ nome: 'Robô', dono: 'Will', key: '', model: 'llama-3.3-70b-versatile', stt: 'whisper-large-v3-turbo', legenda: false }, store.get('cfg', {}))
 
 // ================================================================ CÉREBRO
 // Personalidade: muda devagar (semanas). Humor do dia: sorteado ao acordar.
@@ -684,6 +684,7 @@ function analisar() {
   const rms = Math.sqrt(s / tbuf.length)
   audio.rms = rms
   if (t < falandoAte) return // ouvindo a própria voz
+  if (gravando || t < conversaAte) { cantoRun = []; melodiaRun = []; cantoEmitido = false; tipoCanto = null; return } // conversa com o Groq
   audio.rmsMedio = audio.rmsMedio * 0.98 + rms * 0.02
   if (rms > 0.02) audio.ultimoSom = t
 
@@ -937,6 +938,8 @@ $('#umid').oninput = (e) => { clima.umid = +e.target.value; $('#hv').textContent
 // ================================================================ GROQ: conversa
 let gravando = false, rec = null, micStream = null
 let conversa = [] // últimas falas desta sessão, para ele seguir o assunto
+let conversaAte = 0 // enquanto pensa e responde, o ouvido não reage a mais nada
+let streamFala = null
 async function groq(path, opts) {
   const r = await fetch('https://api.groq.com/openai/v1' + path, { ...opts, headers: { Authorization: 'Bearer ' + cfg.key, ...(opts?.headers || {}) } })
   if (!r.ok) throw new Error(`Groq ${r.status}: ${(await r.text()).slice(0, 160)}`)
@@ -947,9 +950,15 @@ async function alternarFala() {
   if (!cfg.key) { abrirCfg(); $('#cMsg').textContent = 'Coloque a chave do Groq para conversar.'; return }
   if (gravando) { rec?.stop(); return }
   const partes = []
-  rec = new MediaRecorder(micStream)
+  try { streamFala = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }) } catch { streamFala = null }
+  rec = new MediaRecorder(streamFala || micStream)
   rec.ondataavailable = (e) => e.data.size && partes.push(e.data)
-  rec.onstop = () => { gravando = false; $('#btnFalar').classList.remove('on'); processarFala(new Blob(partes, { type: rec.mimeType })) }
+  rec.onstop = () => {
+    gravando = false; $('#btnFalar').classList.remove('on')
+    streamFala?.getTracks().forEach((t) => t.stop()); streamFala = null
+    conversaAte = now() + 20000
+    processarFala(new Blob(partes, { type: rec.mimeType }))
+  }
   rec.start(); gravando = true; $('#btnFalar').classList.add('on')
   foco = { expr: 'ouvindo', ate: now() + 9000 }; icone = { tipo: 'reticencias', ate: now() + 9000 }
   setTimeout(() => { if (gravando) rec.stop() }, 8000)
@@ -961,8 +970,10 @@ async function processarFala(blob) {
     const fd = new FormData()
     fd.append('file', blob, 'fala.' + (blob.type.includes('mp4') ? 'm4a' : 'webm'))
     fd.append('model', cfg.stt); fd.append('language', 'pt'); fd.append('response_format', 'json')
+    fd.append('prompt', `Conversa em português do Brasil com ${cfg.nome}, um robozinho de mesa.`)
     const { text } = await groq('/audio/transcriptions', { method: 'POST', body: fd })
     pushLog(`Você: ${text}`)
+    legenda(`Você: ${text}`)
     if (!text?.trim()) throw new Error('não entendi nada')
     const traços = `extroversão ${P.extroversao.toFixed(2)}, curiosidade ${P.curiosidade.toFixed(2)}, energia ${P.energia.toFixed(2)}, sensibilidade ${P.sensibilidade.toFixed(2)}, afeto por ${cfg.dono} ${P.afeto.toFixed(2)}`
     const gostos = Object.entries(P.gostos).map(([k, v]) => `${k} ${v.toFixed(2)}`).join(', ')
@@ -994,13 +1005,28 @@ EMOÇÕES: ${EMOCOES.join(', ')}
 ÍCONES: ${Object.keys(ICONES).join(', ')}
 
 Responda SÓ com JSON: {"gesto": "...", "emocao": "...", "intensidade": 0 a 1, "icones": [até 3 da lista, ou vazio], "numero": "" ou curto, "pensamento": "o que você quis dizer, numa frase curta em português", "afeto": número de -0.05 a 0.05, "lembrar": "frase curta se valer guardar na memória, senão vazio", "importancia": 1 a 10 (1 = banal, 10 = marcante)}`
+    const ex = (u, a) => [{ role: 'user', content: `${cfg.dono} disse: "${u}"` }, { role: 'assistant', content: JSON.stringify(a) }]
+    const exemplos = [
+      ...ex('Você gosta de música?', { gesto: 'sim', emocao: 'empolgado', intensidade: 0.8, icones: ['musica', 'coracao'], numero: '', pensamento: 'Amo! Ainda mais quando é animada.', afeto: 0.01, lembrar: '', importancia: 1 }),
+      ...ex('Que horas são?', { gesto: 'nenhum', emocao: 'contente', intensidade: 0.4, icones: ['relogio'], numero: '{hora}', pensamento: 'Mostrei a hora.', afeto: 0, lembrar: '', importancia: 1 }),
+      ...ex('Vai chover hoje?', { gesto: 'nao_sei', emocao: 'curioso', intensidade: 0.5, icones: ['nuvem', 'chuva', 'pergunta'], numero: '', pensamento: 'Não sei, não consigo ver o céu daqui.', afeto: 0, lembrar: '', importancia: 1 }),
+      ...ex('Hoje eu tive um dia horrível no trabalho', { gesto: 'suspiro', emocao: 'triste', intensidade: 0.7, icones: ['trabalho', 'coracao_partido', 'abraco'], numero: '', pensamento: 'Poxa... queria te dar um abraço.', afeto: 0.03, lembrar: 'Will teve um dia ruim no trabalho', importancia: 6 }),
+      ...ex('Você é muito fofo', { gesto: 'timido', emocao: 'timido', intensidade: 0.8, icones: ['coracao'], numero: '', pensamento: 'Ai, para... (adorei).', afeto: 0.03, lembrar: '', importancia: 3 }),
+      ...ex('Quanto é 2 mais 3?', { gesto: 'sim', emocao: 'orgulhoso', intensidade: 0.6, icones: [], numero: '5', pensamento: 'Essa eu sei: 5!', afeto: 0, lembrar: '', importancia: 1 }),
+      ...ex('Quer jogar videogame comigo?', { gesto: 'pulinhos', emocao: 'empolgado', intensidade: 0.9, icones: ['jogo', 'ok'], numero: '', pensamento: 'Bora!!', afeto: 0.02, lembrar: '', importancia: 2 }),
+      ...ex('Você quer dormir?', { gesto: 'nao', emocao: 'feliz', intensidade: 0.5, icones: ['dormir', 'errado'], numero: '', pensamento: 'Ainda não, tô ligadão.', afeto: 0, lembrar: '', importancia: 1 }),
+    ].map((m) => ({ ...m, content: m.content.replaceAll('Will', cfg.dono) }))
     conversa.push({ role: 'user', content: `${cfg.dono} disse: "${text}"` })
     const r = await groq('/chat/completions', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: cfg.model, temperature: 0.85, max_tokens: 260, response_format: { type: 'json_object' }, messages: [{ role: 'system', content: sys }, ...conversa.slice(-10)] }),
+      body: JSON.stringify({ model: cfg.model, temperature: 0.7, max_tokens: 300, response_format: { type: 'json_object' }, messages: [{ role: 'system', content: sys }, ...exemplos, ...conversa.slice(-10)] }),
+    }).catch(async (e) => { // modelo sem modo JSON: tenta de novo sem ele
+      if (!/json|response_format/i.test(e.message)) throw e
+      return groq('/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: cfg.model, temperature: 0.7, max_tokens: 300, messages: [{ role: 'system', content: sys }, ...exemplos, ...conversa.slice(-10)] }) })
     })
     const bruto = r.choices[0].message.content
-    const j = JSON.parse(bruto)
+    pushLog('Groq: ' + bruto.slice(0, 300))
+    const j = JSON.parse((bruto.match(/\{[\s\S]*\}/) || [bruto])[0])
     conversa.push({ role: 'assistant', content: bruto }); conversa = conversa.slice(-10)
     const nome = EMOCOES.includes(j.emocao) ? j.emocao : 'curioso'
     const gest = GESTOS[j.gesto] ? j.gesto : 'nenhum'
@@ -1017,17 +1043,27 @@ Responda SÓ com JSON: {"gesto": "...", "emocao": "...", "intensidade": 0 a 1, "
     // Garantia: pergunta de hora ou data sempre mostra o relógio do celular, mesmo se o modelo errar.
     if (/que horas|hor[áa]rio|horas s[ãa]o/i.test(text)) j.numero = valores.hora
     else if (/que dia [ée] hoje|qual (a )?data|dia de hoje/i.test(text)) j.numero = valores.data
+    legenda(`${cfg.nome}: ${j.pensamento || '…'}`)
     pushLog(`${cfg.nome}: ${j.pensamento || '…'} [${gest} · ${nome} ${k.toFixed(1)}${icns.length ? ' · ' + icns.map((x) => ICONES[x]).join('') : ''}${j.numero ? ' · ' + j.numero : ''}]`)
     P.afeto = clamp(P.afeto + clamp(+j.afeto || 0, -0.05, 0.05), 0.05, 0.95)
     if (j.lembrar) lembrar(j.lembrar, clamp(Math.round(+j.importancia || 4), 1, 10))
     evoluir('extroversao', 0.003)
     foco = null; icone = null
+    conversaAte = now() + 3000
     evento({ label: `respondeu a "${text.slice(0, 40)}"`, P: v[0] * k, A: v[1] * k, D: v[2] * k, interesse: 0.9, social: 0.12, expr: nome, gesto: gest, forcarGesto: true, icones: icns, numero: j.numero, som: nome, intens: k, dur: 4500 })
   } catch (err) {
     pushLog('Erro: ' + err.message)
+    legenda('Erro: ' + err.message)
+    conversaAte = now() + 1500
     foco = { expr: 'triste', ate: now() + 2500 }; icone = { tipo: 'interrogacao', ate: now() + 2500 }
     somDe('triste', 0.4)
   }
+}
+
+function legenda(txt) {
+  if (!cfg.legenda) return
+  const el = $('#legenda'); el.textContent = txt; el.hidden = false
+  clearTimeout(legenda.t); legenda.t = setTimeout(() => (el.hidden = true), 6000)
 }
 
 // ---------------------------------------------------------------- reflexão (diário)
@@ -1069,7 +1105,7 @@ new MutationObserver(() => document.body.classList.toggle('painel', !$('#debug')
   .observe(document.body, { subtree: true, attributes: true, attributeFilter: ['hidden'] })
 document.querySelectorAll('[data-fechar]').forEach((b) => (b.onclick = () => { $('#debug').hidden = true; $('#cfg').hidden = true }))
 function abrirCfg() {
-  $('#cNome').value = cfg.nome; $('#cDono').value = cfg.dono; $('#cKey').value = cfg.key; $('#cStt').value = cfg.stt
+  $('#cNome').value = cfg.nome; $('#cDono').value = cfg.dono; $('#cKey').value = cfg.key; $('#cStt').value = cfg.stt; $('#cLegenda').checked = !!cfg.legenda
   const sel = $('#cModel'); sel.innerHTML = ''; sel.add(new Option(cfg.model, cfg.model))
   $('#cfg').hidden = false; $('#debug').hidden = true
   if (cfg.key) carregarModelos()
@@ -1080,16 +1116,21 @@ async function carregarModelos() {
     const ids = data.map((m) => m.id).filter((id) => !/whisper|guard|tts|orpheus|playai|distil/i.test(id)).sort()
     const sel = $('#cModel'); sel.innerHTML = ''
     for (const id of ids) sel.add(new Option(id, id, false, id === cfg.model))
-    if (!ids.includes(cfg.model)) { const pref = ids.find((i) => /llama.*70b/i.test(i)) || ids.find((i) => /llama/i.test(i)) || ids[0]; sel.value = pref }
+    if (!ids.includes(cfg.model)) {
+      const ordem = [/gpt-oss-120b/i, /llama-3\.3-70b/i, /kimi-k2/i, /llama-4-maverick/i, /qwen3-32b/i, /70b/i, /llama/i]
+      sel.value = ordem.map((re) => ids.find((i) => re.test(i))).find(Boolean) || ids[0]
+      $('#cMsg').textContent = `O modelo ${cfg.model} não existe mais no Groq. Escolhi ${sel.value}; toque em Salvar.`
+    }
     const stts = data.map((m) => m.id).filter((id) => /whisper/i.test(id))
     if (stts.length && !stts.includes(cfg.stt)) $('#cStt').value = stts.find((i) => /turbo/.test(i)) || stts[0]
   } catch (e) { $('#cMsg').textContent = 'Não consegui listar os modelos: ' + e.message }
 }
 $('#btnCfg').onclick = () => ($('#cfg').hidden ? abrirCfg() : ($('#cfg').hidden = true))
 $('#cClose').onclick = () => ($('#cfg').hidden = true)
-$('#cKey').onchange = () => { cfg.key = $('#cKey').value.trim(); carregarModelos() }
+$('#cKey').onchange = () => { cfg.key = $('#cKey').value.trim(); store.set('cfg', cfg); carregarModelos() }
+$('#cModel').onchange = () => { cfg.model = $('#cModel').value; store.set('cfg', cfg) }
 $('#cSave').onclick = () => {
-  Object.assign(cfg, { nome: $('#cNome').value.trim() || 'Robô', dono: $('#cDono').value.trim() || 'Will', key: $('#cKey').value.trim(), model: $('#cModel').value, stt: $('#cStt').value.trim() || 'whisper-large-v3-turbo' })
+  Object.assign(cfg, { nome: $('#cNome').value.trim() || 'Robô', dono: $('#cDono').value.trim() || 'Will', key: $('#cKey').value.trim(), model: $('#cModel').value, stt: $('#cStt').value.trim() || 'whisper-large-v3-turbo', legenda: $('#cLegenda').checked })
   store.set('cfg', cfg); $('#cMsg').textContent = 'Salvo.'
 }
 let confirmarReset = 0
