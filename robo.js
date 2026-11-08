@@ -36,9 +36,34 @@ const bus = {
 const cfg = Object.assign({ nome: 'Robô', dono: 'Will', key: '', model: 'openai/gpt-oss-120b', stt: 'whisper-large-v3-turbo', legenda: false, maosLivres: true }, store.get('cfg', {}))
 // Link pessoal com a chave: …/robo-de-mesa/#chave=gsk_… O que vem depois do # nunca é
 // enviado para o servidor; fica só no celular (no favorito ou no atalho).
-{ const m = location.hash.match(/chave=(gsk_[A-Za-z0-9]+)/); if (m && m[1] !== cfg.key) { cfg.key = m[1]; store.set('cfg', cfg) } }
+// A chave só é trocada por outra chave válida: campo vazio ou preenchido errado nunca apaga a boa.
+// Fica em dois lugares do site e também no gerenciador de senhas do Chrome (sobrevive a limpar os dados).
+const chaveValida = (k) => /^gsk_[A-Za-z0-9]{20,}$/.test((k || '').trim())
+function guardarChave(k, origem) {
+  k = (k || '').trim()
+  if (!chaveValida(k)) return false
+  const nova = k !== cfg.key || store.get('chave', '') !== k
+  cfg.key = k; store.set('cfg', cfg); store.set('chave', k)
+  if (nova) {
+    pushLog(`Chave do Groq salva (${origem}) …${k.slice(-4)}`)
+    if (window.PasswordCredential) navigator.credentials.store(new PasswordCredential({ id: 'Groq', name: 'Chave do Groq (Robô de mesa)', password: k })).catch(() => {})
+  }
+  return true
+}
+if (!chaveValida(cfg.key)) cfg.key = chaveValida(store.get('chave', '')) ? store.get('chave', '') : ''
+{ const m = location.hash.match(/chave=(gsk_[A-Za-z0-9]+)/); if (m) guardarChave(m[1], 'link') }
+let dadosProtegidos = null
+navigator.storage?.persisted?.().then((v) => (dadosProtegidos = v)).catch(() => {})
+// Se os dados do site sumiram, tenta pegar a chave do gerenciador de senhas do Chrome.
+async function recuperarChave() {
+  if (chaveValida(cfg.key) || !window.PasswordCredential) return
+  try {
+    const c = await navigator.credentials.get({ password: true, mediation: 'optional' })
+    if (c?.password && guardarChave(c.password, 'gerenciador de senhas')) carregarModelos()
+  } catch {}
+}
 // Pede ao navegador para não apagar os dados deste site quando precisar de espaço.
-navigator.storage?.persist?.().catch(() => {})
+navigator.storage?.persist?.().then((v) => (dadosProtegidos = v)).catch(() => {})
 
 // ================================================================ CÉREBRO
 // Personalidade: muda devagar (semanas). Humor do dia: sorteado ao acordar.
@@ -1537,7 +1562,7 @@ async function carregarModelos() {
 }
 $('#btnCfg').onclick = () => ($('#cfg').hidden ? abrirCfg() : ($('#cfg').hidden = true))
 $('#cClose').onclick = () => ($('#cfg').hidden = true)
-$('#cKey').oninput = () => { cfg.key = $('#cKey').value.trim(); store.set('cfg', cfg) } // salva já ao colar
+$('#cKey').oninput = () => { if (guardarChave($('#cKey').value, 'colada')) $('#cMsg').textContent = 'Chave salva.' } // salva já ao colar
 $('#cLink').onclick = async () => {
   const k = $('#cKey').value.trim() || cfg.key
   if (!k) { $('#cMsg').textContent = 'Cole a chave primeiro.'; return }
@@ -1545,13 +1570,17 @@ $('#cLink').onclick = async () => {
   try { await navigator.clipboard.writeText(link); $('#cMsg').textContent = 'Link copiado. Salve nos favoritos ou crie um atalho na tela inicial com ele. Não compartilhe: ele contém a sua chave.' }
   catch { $('#cMsg').textContent = link }
 }
-$('#cKey').onchange = () => { cfg.key = $('#cKey').value.trim(); store.set('cfg', cfg); carregarModelos() }
+$('#cKey').onchange = () => {
+  const v = $('#cKey').value.trim()
+  if (guardarChave(v, 'digitada')) carregarModelos()
+  else if (v) $('#cMsg').textContent = 'Isso não parece uma chave do Groq (ela começa com gsk_). Mantive a anterior.'
+}
 $('#cModel').onchange = () => { cfg.model = $('#cModel').value; store.set('cfg', cfg) }
 $('#cMaos').onchange = () => { cfg.maosLivres = $('#cMaos').checked; store.set('cfg', cfg) }
 $('#btnJogo').onclick = () => (jogo ? fimDoJogo('parou') : iniciarJogo())
 $('#cSave').onclick = () => {
-  Object.assign(cfg, { nome: $('#cNome').value.trim() || 'Robô', dono: $('#cDono').value.trim() || 'Will', key: $('#cKey').value.trim(), model: $('#cModel').value, stt: $('#cStt').value.trim() || 'whisper-large-v3-turbo', legenda: $('#cLegenda').checked, maosLivres: $('#cMaos').checked })
-  store.set('cfg', cfg); $('#cMsg').textContent = 'Salvo.'
+  Object.assign(cfg, { nome: $('#cNome').value.trim() || 'Robô', dono: $('#cDono').value.trim() || 'Will', key: chaveValida($('#cKey').value) ? $('#cKey').value.trim() : cfg.key, model: $('#cModel').value, stt: $('#cStt').value.trim() || 'whisper-large-v3-turbo', legenda: $('#cLegenda').checked, maosLivres: $('#cMaos').checked })
+  store.set('cfg', cfg); guardarChave(cfg.key, 'salvar'); $('#cMsg').textContent = cfg.key ? 'Salvo.' : 'Salvo, mas ainda falta a chave do Groq.'
 }
 let confirmarReset = 0
 $('#cReset').onclick = () => {
@@ -1620,6 +1649,7 @@ Rosto        : ${pessoa.presente ? `sorriso ${rosto.sorriso.toFixed(2)} · franz
 Luz          : ${luz.nivel < 0 ? '— (precisa da câmera)' : `${Math.round(luz.nivel)} (normal ${Math.round(luz.base)})${luz.escuro ? ' · escuro' : ''}`}
 Sua voz      : ${P.voz ? `aprendida em ${P.voz.n} fala(s)` : 'ainda não conhece'}${vozDono ? ` · última ${vozDono.tipo}` : ''}
 Microfone    : nível ${vad.nivel.toFixed(3)} · precisa passar de ${Math.max(0.006, vad.piso * 3.5).toFixed(3)} para ouvir uma frase
+Chave do Groq: ${cfg.key ? `salva …${cfg.key.slice(-4)}` : 'não salva'} · dados do site ${dadosProtegidos ? 'protegidos' : dadosProtegidos === false ? 'podem ser apagados pelo navegador' : '?'}
 Mãos livres  : ${!cfg.maosLivres ? 'desligado' : !cfg.key ? 'precisa da chave' : vad.verificando ? 'conferindo se era com ele…' : vad.ativo ? 'ouvindo uma frase' : 'esperando o nome'} · ${vad.hora.length}/40 na hora${jogo ? `
 Jogo         : ${jogo.fase} · ${jogo.seq.length} notas` : ''}`
   $('#diario').textContent = [P.opiniao ? `Sobre ${cfg.dono}: ${P.opiniao}` : '', ...memorias.filter((m) => m.tipo === 'reflexao').slice(0, 6).map((m) => `${new Date(m.t).toLocaleDateString('pt-BR')} · ${m.txt}`)].filter(Boolean).join('\n') || 'Ainda não refletiu. Precisa da chave do Groq e de algumas lembranças.'
@@ -1638,6 +1668,8 @@ $('#btnStart').onclick = async () => {
     await ligarOuvido(micStream)
     $('#start').hidden = true
     manterTela()
+    await recuperarChave()
+    pushLog(cfg.key ? `Chave do Groq carregada …${cfg.key.slice(-4)}` : 'Sem chave do Groq salva neste celular')
     conferirModelo()
     pushLog(`Cérebro→ acordou ${nomePAD(humor)} (dia ${P.dias} de vida)`)
     somDe(humor.P > 0 ? 'feliz' : 'entediado', 0.5)

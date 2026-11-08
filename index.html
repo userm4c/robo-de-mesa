@@ -97,7 +97,7 @@
   <button class="fechar" data-fechar>✕</button><h3>Configurações</h3>
   <label>Nome do robô</label><input id="cNome">
   <label>Seu nome</label><input id="cDono">
-  <label>Chave do Groq (fica só neste celular)</label><input id="cKey" type="password" autocomplete="off" placeholder="gsk_…">
+  <label>Chave do Groq (fica só neste celular)</label><input id="cUser" type="text" autocomplete="username" value="Groq" style="display:none"><input id="cKey" type="password" autocomplete="current-password" placeholder="gsk_…">
   <p class="hint">Crie de graça em console.groq.com → API Keys.</p>
   <div class="row" style="margin-top:6px"><button id="cLink">Copiar meu link com a chave</button></div>
   <label>Modelo de conversa</label><select id="cModel"></select>
@@ -116,6 +116,6 @@
 </div>
 
 <video id="cam" playsinline muted hidden></video>
-<script type="module" src="robo.js?v=6"></script>
+<script type="module" src="robo.js?v=7"></script>
 </body>
 </html>
