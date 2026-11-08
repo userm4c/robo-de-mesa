@@ -34,6 +34,11 @@ const bus = {
 
 // ---------------------------------------------------------------- configurações
 const cfg = Object.assign({ nome: 'Robô', dono: 'Will', key: '', model: 'llama-3.3-70b-versatile', stt: 'whisper-large-v3-turbo', legenda: false, maosLivres: true }, store.get('cfg', {}))
+// Link pessoal com a chave: …/robo-de-mesa/#chave=gsk_… O que vem depois do # nunca é
+// enviado para o servidor; fica só no celular (no favorito ou no atalho).
+{ const m = location.hash.match(/chave=(gsk_[A-Za-z0-9]+)/); if (m && m[1] !== cfg.key) { cfg.key = m[1]; store.set('cfg', cfg) } }
+// Pede ao navegador para não apagar os dados deste site quando precisar de espaço.
+navigator.storage?.persist?.().catch(() => {})
 
 // ================================================================ CÉREBRO
 // Personalidade: muda devagar (semanas). Humor do dia: sorteado ao acordar.
@@ -1456,6 +1461,14 @@ async function carregarModelos() {
 }
 $('#btnCfg').onclick = () => ($('#cfg').hidden ? abrirCfg() : ($('#cfg').hidden = true))
 $('#cClose').onclick = () => ($('#cfg').hidden = true)
+$('#cKey').oninput = () => { cfg.key = $('#cKey').value.trim(); store.set('cfg', cfg) } // salva já ao colar
+$('#cLink').onclick = async () => {
+  const k = $('#cKey').value.trim() || cfg.key
+  if (!k) { $('#cMsg').textContent = 'Cole a chave primeiro.'; return }
+  const link = location.origin + location.pathname + '#chave=' + k
+  try { await navigator.clipboard.writeText(link); $('#cMsg').textContent = 'Link copiado. Salve nos favoritos ou crie um atalho na tela inicial com ele. Não compartilhe: ele contém a sua chave.' }
+  catch { $('#cMsg').textContent = link }
+}
 $('#cKey').onchange = () => { cfg.key = $('#cKey').value.trim(); store.set('cfg', cfg); carregarModelos() }
 $('#cModel').onchange = () => { cfg.model = $('#cModel').value; store.set('cfg', cfg) }
 $('#cMaos').onchange = () => { cfg.maosLivres = $('#cMaos').checked; store.set('cfg', cfg) }
