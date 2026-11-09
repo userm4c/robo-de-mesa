@@ -49,6 +49,16 @@ Abra https://userm4c.github.io/robo-de-mesa/ no Chrome do Android e toque em "Ac
 - **Companhia:** torcedor do seu time ("meu time é o …": agenda do dia, placar ao vivo, comemora gol), pausa depois de 2 h na frente dele, copinho de água ("bebi água", meta de 8), plantas ("me lembra de regar as plantas a cada 3 dias", "reguei"), fica com sono antes de você às 22 h.
 - **Personalidade:** hobby que muda a cada 1–2 semanas, uma mania própria, ciúme leve do celular (olhando para baixo por muito tempo), música do humor (feliz = rápida e maior; triste = devagar e menor) e medo do escuro que passa com carinho.
 
+## Memória na nuvem (v28)
+
+A mesma memória do robô em todos os aparelhos. Ela fica em `memoria/robo.json` no repositório privado dos logs e usa o mesmo token do log (⚙️ ou o link pessoal).
+- Ao abrir, antes de acordar, ele baixa o que outro aparelho mudou. Durante o uso, sincroniza a cada 3 min e ao sair da tela. Se outro aparelho mudou algo, recarrega sozinho num momento calmo (fora de conversa ou brincadeira).
+- Se os dois aparelhos mudaram ao mesmo tempo, junta campo a campo comparando com a última versão sincronizada: lembranças, sons, figurinhas, truques, músicas, caretas e desenhos dos dois; no resto, fica o que cada lado mudou.
+- Num aparelho novo, se já existir um robô na nuvem, vale o mais velho (o recém-nascido do aparelho novo vira o Bob-e).
+- As chaves do Groq e do Gemini e o token **não** vão para a nuvem.
+- Vão para a nuvem: personalidade, memórias, sons aprendidos, necessidades, humor, terrário, cota da IA do dia, e nome, dono, cidade e preferências do ⚙️.
+- 🐞 mostra o estado ("Memória nuvem") e tem o botão ☁️ Sincronizar memória.
+
 ## Como o código está dividido (v22–v24)
 
 O protótipo já está separado do jeito que o robô de verdade vai ser:
@@ -58,6 +68,7 @@ O protótipo já está separado do jeito que o robô de verdade vai ser:
 | `robo.js` | firmware do **ESP32-S3** | cérebro: emoções, necessidades, ouvido, câmera, memória, jogos. Não desenha nada. |
 | `c3.js` | firmware do **ESP32-C3** | tela 240×240: rosto, gestos, balão, emotes, acessórios, moldura, névoa. Só desenha o que chega pela UART. |
 | `servidor.js` | gateway Node no **homelab** | toda a IA: modelos, cotas, cache, prompts, conversa, imaginação, desenho, pesquisa. |
+| `memoria.js` | homelab | memória na nuvem: a mesma em todos os aparelhos (hoje no GitHub privado). |
 | `comum.js` | tabelas nos dois chips | ícones, cores, emotes, acessórios, expressões, duração dos gestos. |
 | `icones.js` | flash do C3 | 159 ícones 16×16 em 4 bits por pixel (≈21 KB), gerados por `ferramentas/gerar_icones.py`. |
 

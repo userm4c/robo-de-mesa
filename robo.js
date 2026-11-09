@@ -6,6 +6,7 @@
 // As mensagens entre S3 e C3 passam pelo "bus", que no robô vira a UART.
 
 import { criarServidor } from './servidor.js?v=27'
+import { criarMemoria, CHAVES_MEMORIA } from './memoria.js?v=28'
 import { criarC3 } from './c3.js?v=24'
 import { ICONES, PALETA, NOME_COR, EMOTES, ELEMENTOS, EXPR, GESTO_DUR as GESTOS, SAIDAS } from './comum.js?v=24'
 const $ = (s) => document.querySelector(s)
@@ -14,14 +15,19 @@ const lerp = (a, b, t) => a + (b - a) * t
 const rnd = (a, b) => a + Math.random() * (b - a)
 const now = () => performance.now()
 const hojeSv = () => new Date().toLocaleDateString('sv') // data de hoje como 2026-11-08
+let memoriaNuvem = null
+const SINCRONIZADAS = new Set(CHAVES_MEMORIA)
 const store = {
   get(k, d) { try { const v = localStorage.getItem('robo.' + k); return v == null ? d : JSON.parse(v) } catch { return d } },
-  set(k, v) { try { localStorage.setItem('robo.' + k, JSON.stringify(v)) } catch {} },
+  set(k, v) {
+    if (memoriaNuvem && (SINCRONIZADAS.has(k) || k === 'cfg')) { if (memoriaNuvem.travado) return; memoriaNuvem.marcar() } // memória na nuvem: marca o que mudou
+    try { localStorage.setItem('robo.' + k, JSON.stringify(v)) } catch {}
+  },
   del(k) { try { localStorage.removeItem('robo.' + k) } catch {} },
 }
 
 // ---------------------------------------------------------------- barramento
-const VERSAO = 'v27 · 09/11'
+const VERSAO = 'v28 · 09/11'
 const logLines = []
 const filaLog = [] // tudo o que aconteceu desde o último envio para o log remoto
 function pushLog(s) {
@@ -30,6 +36,16 @@ function pushLog(s) {
   if (logLines.length > 150) logLines.pop()
   filaLog.push(`${t}  ${s}`); if (filaLog.length > 4000) filaLog.splice(0, 1000)
 }
+// Memória na nuvem (memoria.js): antes de carregar a personalidade, baixa a mais nova de outro aparelho.
+const tokenDaNuvem = () => (/log=((?:github_pat_|ghp_)[A-Za-z0-9_]+)/.exec(location.hash) || [])[1] || store.get('cfg', {}).logToken || store.get('logToken', '')
+memoriaNuvem = criarMemoria({
+  ler: (k, d) => store.get(k, d),
+  gravar: (k, v) => { try { localStorage.setItem('robo.' + k, JSON.stringify(v)) } catch {} },
+  log: (t) => pushLog(t),
+  acesso: () => ({ token: tokenDaNuvem(), repo: store.get('cfg', {}).logRepo || 'userm4c/robo-logs' }),
+})
+try { pushLog(`Memória na nuvem ao abrir: ${await memoriaNuvem.aoAbrir()}`) } catch (e) { pushLog('Memória na nuvem: ' + e.message) }
+
 const handlers = {}
 const bus = {
   on(t, f) { (handlers[t] ??= []).push(f) },
@@ -3847,6 +3863,7 @@ Mais enviadas: ${Object.entries(uart.cont).sort((a, b) => b[1] - a[1]).slice(0, 
 ${uart.ultimas.map((l) => '  ' + l).join('\n')}
 Fôlego da IA : ${Math.round(folegoIA() * 100)}% (${sonoIA ? 'dormindo para recarregar' + (voltaDaIA() ? ', volta em ~' + voltaDaIA() : '') : nivelIA})
 IA hoje      : ${servidor.cotaTexto() || '—'}
+Memória nuvem: ${memoriaNuvem.texto()}
 Log remoto   : ${!tokenLogValido(cfg.logToken) ? 'sem token' : logEnvio.erro ? 'erro: ' + logEnvio.erro : logEnvio.ultimo ? `enviado há ${Math.round((Date.now() - logEnvio.ultimo) / 60000)} min` : 'ainda não enviou'} · ${filaLog.length} linha(s) na fila`
 }
 
@@ -3936,6 +3953,21 @@ async function conferirVersao() {
     if (document.visibilityState === 'hidden') atualizar()
   } catch {}
 }
+// Memória na nuvem durante o uso: sobe o que mudou; se outro aparelho mudou, recarrega com a memória nova.
+async function sincronizarNuvem() {
+  const r = await memoriaNuvem.sincronizar({ aoVivo: true })
+  if (r === 'baixou' || r === 'mesclou') recarregarComMemoriaNova(now())
+}
+function recarregarComMemoriaNova(desde) {
+  const seguro = !brinc && !gravando && !alarme && papo.estado !== 'conversando' && !vad.ativo && !vad.verificando && !captura
+  if (document.visibilityState === 'hidden' || seguro || now() - desde > 120000) {
+    pushLog('Memória na nuvem→ recarregando com a memória do outro aparelho')
+    enviarLog('memória nova').finally(() => location.reload())
+  } else setTimeout(() => recarregarComMemoriaNova(desde), 15000)
+}
+setInterval(sincronizarNuvem, 3 * 60000)
+document.addEventListener('visibilitychange', () => sincronizarNuvem())
+$('#tSincronizar').onclick = () => { pushLog('Memória na nuvem: sincronizando agora'); sincronizarNuvem() }
 function atualizar() {
   enviarLog('atualizando').finally(() => location.replace(location.pathname + '?v=' + (versaoNova || Date.now()) + location.hash))
 }

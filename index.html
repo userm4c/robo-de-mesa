@@ -125,6 +125,7 @@
     <button id="tDecorar">Decorar agora</button>
     <button id="tEsquecerSons" class="danger">Esquecer sons</button>
     <button id="tEnviarLog">📤 Enviar log agora</button>
+    <button id="tSincronizar">☁️ Sincronizar memória</button>
   </div>
   <p class="hint">Data vazia = hoje. Escolha uma data perto de uma festa para testar a decoração. "Susto" lá em cima também grava o barulho: três sustos iguais e ele pergunta o que é.</p>
   <label>Tela (C3) pela UART</label>
@@ -154,7 +155,7 @@
   <label>Sua cidade (para a previsão do tempo)</label><input id="cCidade" placeholder="ex.: Natal, RN">
   <label>Chave do Gemini (reforço, opcional, fica só neste celular)</label><input id="cGemini" type="password" autocomplete="off" placeholder="AQ.… ou AIza…">
   <p class="hint">Grátis em aistudio.google.com → Get API key. Entra quando os modelos do Groq estão no limite. Só vai texto, nunca imagem.</p>
-  <label>Token do GitHub para enviar o log (fica só neste celular)</label><input id="cLogToken" type="password" autocomplete="off" placeholder="github_pat_…">
+  <label>Token do GitHub (log e memória na nuvem: a mesma memória em todos os aparelhos; fica só neste aparelho)</label><input id="cLogToken" type="password" autocomplete="off" placeholder="github_pat_…">
   <p class="hint">Com ele, o robô manda o log para o repositório privado userm4c/robo-logs a cada 5 min (e na hora, se der erro), para o Claude analisar.</p>
   <div class="row">
     <button id="cSave">Salvar</button>
@@ -167,6 +168,6 @@
 </div>
 
 <video id="cam" playsinline muted hidden></video>
-<script type="module" src="robo.js?v=27"></script>
+<script type="module" src="robo.js?v=28"></script>
 </body>
 </html>
