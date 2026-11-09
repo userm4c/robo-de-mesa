@@ -98,6 +98,19 @@
     <button id="tTocaAqui">Toca aqui</button>
     <button id="tCansar">Esgotar IA (teste)</button>
   </div>
+  <label>Brincadeiras e rotina</label>
+  <div class="row" style="margin-top:0">
+    <button id="tCharada">Charadas</button><button id="tVinte">20 perguntas</button><button id="tQuiz">Quiz de contas</button>
+    <button id="tCareta">Imita a careta 📷</button><button id="tImitaEu">Imita eu 📷</button><button id="tRitmo">Ritmo de palmas</button>
+    <button id="tEsconde">Esconde-esconde 📷</button><button id="tPPT">Pedra-papel-tesoura 📷</button><button id="tDesenhar">Desenhar</button>
+    <button id="tDancar">Dançar</button><button id="tDiario">Diário do dia</button><button id="tNoticias">Notícias</button>
+    <button id="tFoco">Foco (1 min, teste)</button><button id="tLembrete">Lembrete em 1 min</button><button id="tTempo">Previsão</button>
+    <button id="tBicho">Bichinho</button><button id="tPresente">Presente</button><button id="tAlbum">Álbum</button>
+    <button id="tFesta">Festa</button><button id="tPararBrinc" class="danger">Parar brincadeira</button>
+  </div>
+  <label>Terrário (simulado até o sensor do terrário chegar): <span id="tvT">24</span> °C · <span id="hvT">70</span> %</label>
+  <input id="tTerTemp" type="range" min="10" max="40" value="24">
+  <input id="tTerUmid" type="range" min="10" max="99" value="70">
   <label>Emotes pixelados</label>
   <div class="row" style="margin-top:0">
     <select id="tEmote" style="flex:1"></select>
@@ -144,6 +157,6 @@
 </div>
 
 <video id="cam" playsinline muted hidden></video>
-<script type="module" src="robo.js?v=16"></script>
+<script type="module" src="robo.js?v=17"></script>
 </body>
 </html>

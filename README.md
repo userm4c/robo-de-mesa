@@ -31,6 +31,13 @@ Abra https://userm4c.github.io/robo-de-mesa/ no Chrome do Android e toque em "Ac
 - **Datas comemorativas:** decora a borda da tela sozinho (Natal, Ano-Novo, Carnaval, Páscoa, Namorados, Festa Junina, Crianças, Halloween, aniversários), pergunta se você gostou, guarda sugestões para a data certa e pesquisa ideias novas (groq/compound).
 - **Rituais:** boa noite (touca, bocejo, carneirinhos), "toca aqui", saudade proporcional ao tempo longe; pede atenção em degraus só quando está muito solitário.
 
+## Diversão (v17)
+
+- **Jogos:** charadas de emoji, 20 perguntas, quiz de contas, imita a careta e imita eu (câmera), ritmo de palmas, esconde-esconde (câmera), pedra-papel-tesoura (câmera + reconhecimento de mãos), jogo da melodia.
+- **Criatividade:** ele desenha pixel art pedida por voz (aparece pixel por pixel; galeria e desenho do dia), música do dia, segunda voz quando você assobia, dança no ritmo, diário do dia em quadrinhos, notícias em emojis.
+- **Rotina:** modo foco (Pomodoro com fone e anel de progresso), lembretes e despertador por voz ("me lembra de… às 18h", "daqui a 20 minutos", soneca com bronca), previsão do tempo (Open-Meteo, sem chave), bom dia completo, cor do humor no fundo.
+- **Vida:** bichinho do terrário (sensor simulado por enquanto), presentes surpresa, mêsversário com festa, álbum de 24 figurinhas.
+
 ## O que dá personalidade a ele
 
 - **Necessidades** (como os *drives* do Kismet, do MIT): companhia, novidade e energia, cada uma com uma faixa boa. Fora dela ele fica incomodado e age: chama atenção, pede música, sente saudade, pede espaço quando é atenção demais, fica tonto com coisa demais, cochila.
