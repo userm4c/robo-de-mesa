@@ -27,7 +27,7 @@ const store = {
 }
 
 // ---------------------------------------------------------------- barramento
-const VERSAO = 'v29 · 09/11'
+const VERSAO = 'v30 · 09/11'
 const logLines = []
 const filaLog = [] // tudo o que aconteceu desde o último envio para o log remoto
 function pushLog(s) {
@@ -3779,6 +3779,7 @@ function ensinarFala(text) {
 // instalando" (chuva de letras) e, ao voltar, conta o que aprendeu a fazer.
 const NOVIDADES = {
   v28: [['mundo', 'lembrar de tudo em qualquer aparelho']],
+  v30: [['ideia', 'lembrar qual versão eu era, pra contar as novidades']],
   v29: [['seta_cima', 'perceber quando tem versão nova e pedir pra atualizar'], ['musica', 'falar umas palavrinhas de verdade (e aprender mais)'], ['agua', 'entender “acabei de beber água” e mostrar o copo'], ['ouvido', 'ouvir mais frases por hora']],
 }
 const numV = (v) => +String(v).replace(/\D/g, '') || 0
@@ -3811,6 +3812,10 @@ function iniciarAtualizacao() {
 function depoisDaAtualizacao() {
   let a = null
   try { a = JSON.parse(localStorage.getItem('robo.atualizacao') || 'null') } catch {}
+  // Também percebe atualizações feitas por versões antigas (que não sabiam avisar): compara com a última versão que ele viu.
+  const vista = P.versaoVista || 'v27'
+  if (P.versaoVista !== NUM_VERSAO) { P.versaoVista = NUM_VERSAO; store.set('pers', P) }
+  if (!a && numV(vista) < numV(NUM_VERSAO)) a = { de: vista, t: Date.now() }
   if (!a) return
   if (document.visibilityState === 'hidden') return document.addEventListener('visibilitychange', depoisDaAtualizacao, { once: true })
   try { localStorage.removeItem('robo.atualizacao') } catch {}
