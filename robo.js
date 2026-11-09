@@ -17,7 +17,7 @@ const store = {
 }
 
 // ---------------------------------------------------------------- barramento
-const VERSAO = 'v20 · 08/11'
+const VERSAO = 'v21 · 08/11'
 const logLines = []
 const filaLog = [] // tudo o que aconteceu desde o último envio para o log remoto
 function pushLog(s) {
@@ -907,7 +907,7 @@ function chamouPeloNome(texto) {
   }
   return null
 }
-const ALUCINACAO = /obrigad[oa] por assistir|legendas? (pela|por|da)|amara\.org|inscreva-se|se inscreva|tchau,? tchau/i
+const ALUCINACAO = /obrigad[oa] por assistir|legendas? (pela|por|da)|amara\.org|inscreva-se|se inscreva|tchau,? tchau|robozinho de (mesa|bambu|b[áa]scoa)|conversa em portugu[eê]s|conex[ãa]o em portugu[eê]s|portugu[eê]s do b(rasil|[áa]scoa)/i
 // Se a frase não tinha palavras (era cantarolar ou assobio), aí sim ele reage à melodia.
 function soltarMelodia(eraFala) {
   const m = vad.melodiaPendente; vad.melodiaPendente = null
@@ -925,7 +925,7 @@ function pareceComigo(t, outraVoz) {
   if (/\?\s*$/.test(t)) p += 1
   if (n > 25) p -= 2
   if (/(^|\s)(pessoal|galera|gente|v[ií]deos?|aula|inscrev|canal|t[áa]\?)([\s,.!?]|$)/i.test(t)) p -= 2
-  if (outraVoz) p -= 2
+  if (outraVoz) p -= 1
   return p >= 1
 }
 // A voz do dono é aprendida só quando ele chama pelo nome (assim a TV não estraga a referência).
@@ -934,7 +934,7 @@ function aprenderVozDono(r) {
   const b = P.vozNome, a = b ? Math.max(0.2, 1 / (b.n + 1)) : 1
   P.vozNome = b ? { med: lerp(b.med, r.med, a), n: b.n + 1 } : { med: r.med, n: 1 }
 }
-const vozDeOutraPessoa = (r) => !!(r && P.vozNome?.n >= 3 && Math.abs(r.med - P.vozNome.med) > 4.5)
+const vozDeOutraPessoa = (r) => !!(r && P.vozNome?.n >= 6 && Math.abs(r.med - P.vozNome.med) > 6.5)
 // Muita frase que não é com ele em pouco tempo = TV ou vídeo ligado: por 3 min ele ouve menos.
 function contarOuvida() {
   const t = now()
@@ -1473,7 +1473,7 @@ async function transcrever(blob) {
   const fd = new FormData()
   fd.append('file', blob, 'fala.' + (blob.type.includes('wav') ? 'wav' : blob.type.includes('mp4') ? 'm4a' : 'webm'))
   fd.append('model', cfg.stt); fd.append('language', 'pt'); fd.append('response_format', 'json')
-  fd.append('prompt', `${cfg.nome}, tudo bem? ${cfg.nome}, que horas são? Conversa em português do Brasil com ${cfg.nome}, um robozinho de mesa.`)
+  fd.append('prompt', `${cfg.nome}.`) // só o nome (para acertar a grafia); dica longa vira texto inventado quando o som é ruim
   const { text } = await groq('/audio/transcriptions', { method: 'POST', body: fd })
   return (text || '').trim()
 }
@@ -1771,7 +1771,7 @@ function respostaLocal(texto) {
     if (/not[íi]cia/.test(t)) return ac('noticias', ['mundo'], 'Vou ver!')
     if (/para(r)? (o )?foco|terminei (o|de) trabalh|acabei (o|de) trabalh/.test(t)) return ac('parar_foco', ['ok'], 'Fim do foco!')
     if (/modo foco|pomodoro|vou (trabalhar|estudar)|me ajuda a focar/.test(t)) return ac('foco', ['trabalho'], 'Foco!')
-    if (/vai chover|previs[ãa]o|como (vai |est[áa] )?o tempo|vai fazer (sol|frio|calor)/.test(t)) return ac('tempo', ['nuvem'], 'Deixa eu ver…', { gesto: 'nenhum', emocao: 'curioso' })
+    if (/vai chover|previs[ãa]o|como (vai |est[áa] |t[áa] |[ée] que (est[áa]|t[áa]) )?o (tempo|clima)|(tempo|clima) l[áa] fora|vai fazer (sol|frio|calor)/.test(t)) return ac('tempo', ['nuvem'], 'Deixa eu ver…', { gesto: 'nenhum', emocao: 'curioso' })
     if (/[áa]lbum|figurinha/.test(t)) return ac('album', ['livro'], 'Olha meu álbum!')
     if (/quantos dias (voc[êe] tem|de vida)|sua idade|quantos anos voc[êe] tem/.test(t)) return { ...b, gesto: 'pulinhos', emocao: 'orgulhoso', icones: ['bolo', 'calendario'], numero: `${diasDeVida()}d`, pensamento: `Tenho ${diasDeVida()} dia(s) de vida!` }
   }
@@ -1812,7 +1812,7 @@ ${sobreDeco ? `- Se ${cfg.dono} der uma ideia para a decoração da tela (desta 
 ${sobreAniv ? `- Se ${cfg.dono} disser o dia do aniversário dele(a), preencha "aniversario_dono" com "DD/MM"; senão "".` : '- "aniversario_dono": "".'}
 ${contextoTexto(ctx)}
 
-Agora: ${quando}. Temperatura ${clima.temp} °C, umidade ${clima.umid} %. ${audio.musica ? `Está tocando música ${audio.estilo} (${audio.bpm} BPM).` : ''}
+Agora: ${quando}. Aqui dentro (seu sensor): ${clima.temp} °C, umidade ${clima.umid} % — isso NÃO é o tempo lá fora; para o tempo lá fora use "acao": "tempo". ${audio.musica ? `Está tocando música ${audio.estilo} (${audio.bpm} BPM).` : ''}
 ${percepcao(vh)}
 Sua personalidade (0 a 1): ${traços}, confiança em ${cfg.dono} ${P.confianca.toFixed(2)}. Você tem ${P.dias} dia(s) de vida.
 ${P.opiniao ? `O que você acha de ${cfg.dono}: ${P.opiniao}` : ''}
@@ -1891,7 +1891,7 @@ ELEMENTOS de decoração: ${ELEMENTOS.join(', ')}. CORES: ${Object.entries(NOME_
     if (/^\d{1,2}\/\d{1,2}$/.test(j.aniversario_dono || '') && P.anivDono !== j.aniversario_dono) { P.anivDono = j.aniversario_dono; lembrar(`O aniversário de ${cfg.dono} é ${j.aniversario_dono}`, 8); store.set('pers', P) }
     if (ctx?.tipo === 'pesadelo' && v[0] > 0.2) { P.confianca = clamp(P.confianca + 0.02, 0.05, 0.95); lembrar(`${cfg.dono} me consolou depois de um pesadelo`, 7) }
     if (/^(quiz|charada|vinte_perguntas|careta|imita_eu|ritmo|esconde|ppt)$/.test(j.acao || '')) j.numero = ''
-    const ACAO_COMBINA = { cochilar: /cochil|dorm|descans|sono|cansad/i, ver_desenho: /desenh/i, charada: /charad|advinh|adivinh|emoji/i, vinte_perguntas: /pergunta|adivinh/i, quiz: /quiz|conta|soma|matem/i, careta: /careta|imit/i, imita_eu: /imit/i, ritmo: /palma|ritmo/i, esconde: /escond/i, ppt: /pedra|papel|tesoura|jokenp/i, desenhar: /desenh|pint|rabisc/i, dancar: /dan[çc]/i, diario: /di[áa]rio|dia/i, noticias: /not[íi]cia|aconteceu|novidade/i, foco: /foco|trabalh|estud|pomodoro|concentr/i, parar_foco: /foco|terminei|acabei|parar/i, tempo: /chov|chuva|tempo|previs|sol|frio|calor/i, album: /[áa]lbum|figurinha/i, cantar: /cant|m[úu]sica|melodia/i, jogo_melodia: /jog|brinc|melodia/i, repetir_som: /barulh|som|assust/i, contar_historia: /(conta|conte|contar|me fala|quero ouvir|outra|mais uma).*(hist|sonh|imagin)|o que (voc[êe] )?(sonhou|imaginou)/i, boa_noite: /noite|dorm|cochil|sono/i, toca_aqui: /toca|bate|m[ãa]o/i, devanear: /imagin|invent|devane|sonh/i, decorar: /decor|enfeit|natal|festa/i }
+    const ACAO_COMBINA = { cochilar: /cochil|dorm|descans|sono|cansad/i, ver_desenho: /desenh/i, charada: /charad|advinh|adivinh|emoji/i, vinte_perguntas: /(20|vinte) perguntas|adivinha (o que|qual)|pensa (numa|em uma) coisa/i, quiz: /quiz|conta|soma|matem/i, careta: /careta|imit/i, imita_eu: /imit/i, ritmo: /palma|ritmo/i, esconde: /escond/i, ppt: /pedra|papel|tesoura|jokenp/i, desenhar: /desenh|pint|rabisc/i, dancar: /dan[çc]/i, diario: /di[áa]rio|dia/i, noticias: /not[íi]cia|aconteceu|novidade/i, foco: /foco|trabalh|estud|pomodoro|concentr/i, parar_foco: /foco|terminei|acabei|parar/i, tempo: /chov|chuva|tempo|previs|sol|frio|calor/i, album: /[áa]lbum|figurinha/i, cantar: /cant|m[úu]sica|melodia/i, jogo_melodia: /jog|brinc|melodia/i, repetir_som: /barulh|som|assust/i, contar_historia: /(conta|conte|contar|me fala|quero ouvir|outra|mais uma).*(hist|sonh|imagin)|o que (voc[êe] )?(sonhou|imaginou)/i, boa_noite: /noite|dorm|cochil|sono/i, toca_aqui: /toca|bate|m[ãa]o/i, devanear: /imagin|invent|devane|sonh/i, decorar: /decor|enfeit|natal|festa/i }
     if (j.acao && ACAO_COMBINA[j.acao] && !ACAO_COMBINA[j.acao].test(text)) { pushLog(`IA: ação "${j.acao}" ignorada (não combina com a frase)`); j.acao = '' }
     const acoes = { cochilar: () => { dormir('cochilo que você pediu'); sono.cochiloAte = now() + 10 * 60000; sono.proxREM = now() + 4 * 60000 }, ver_desenho: () => verDesenho(j.tema || text), charada: brincCharada, vinte_perguntas: brincVinte, quiz: brincQuiz, careta: brincCareta, imita_eu: brincImitaEu, ritmo: brincRitmo, esconde: brincEsconde, ppt: brincPPT, desenhar: () => fazerDesenho(j.tema || ''), dancar, diario: mostrarDiario, noticias: noticiasEmEmojis, foco: () => comecarFoco(), parar_foco: pararFoco, tempo: () => falarDoTempo(text), album: mostrarAlbum, cantar: cantarMusica, jogo_melodia: iniciarJogo, repetir_som: repetirUltimoSom, contar_historia: () => contarHistoria(), boa_noite: ritualBoaNoite, toca_aqui: comecarTocaAqui, devanear: () => devanear(true), decorar: () => decorar(true) }
     if (acoes[j.acao]) setTimeout(acoes[j.acao], r.modelo === 'local' ? 1200 : j.acao === 'toca_aqui' ? 2000 : 2600)
@@ -3196,17 +3196,33 @@ async function mostrarDiario() {
   if (!h) return evento({ label: 'não consegui montar o diário', gesto: 'nao_sei', forcarGesto: true, interesse: 0.4, dur: 2000 })
   guardarHistoria(h); contarHistoria(memorias[0])
 }
+// Pesquisa na web: modelo do Groq com busca (compound) ou, sem ele, Gemini com busca do Google.
+async function pesquisarNaWeb(pedido) {
+  const compound = modelosGroq.find((i) => /^groq\/compound$/i.test(i)) || modelosGroq.find((i) => /compound/i.test(i))
+  if (compound) {
+    const r = await groq('/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: compound, messages: [{ role: 'user', content: pedido }], max_completion_tokens: 1800 }) })
+    return String(r.choices[0].message.content)
+  }
+  const gem = cfg.geminiKey && (modelosGemini.find((m) => /flash(?!.*lite)/.test(m)) || modelosGemini[0])
+  if (gem) {
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${gem.slice(7)}:generateContent?key=${encodeURIComponent(cfg.geminiKey)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: pedido }] }], tools: [{ google_search: {} }] }) })
+    if (!r.ok) throw new Error(`Gemini ${r.status}: ${(await r.text()).slice(0, 200)}`)
+    const j = await r.json()
+    return (j.candidates?.[0]?.content?.parts || []).map((x) => x.text || '').join('')
+  }
+  return null
+}
 async function noticiasEmEmojis() {
-  const modelo = modelosGroq.find((i) => /^groq\/compound$/i.test(i)) || modelosGroq.find((i) => /compound/i.test(i))
-  if (!modelo) return evento({ label: 'não consigo pesquisar notícias agora', gesto: 'nao_sei', forcarGesto: true, icones: ['mundo', 'pergunta'], interesse: 0.4, dur: 2500 })
+  const podePesquisar = modelosGroq.some((i) => /compound/i.test(i)) || (cfg.geminiKey && modelosGemini.length)
+  if (!podePesquisar) { legendaSempre(`${cfg.nome}: Pra ver notícias eu preciso pesquisar na internet — coloque a chave do Gemini em ⚙️.`); return evento({ label: 'não consigo pesquisar notícias agora', gesto: 'nao_sei', forcarGesto: true, icones: ['mundo', 'pergunta'], interesse: 0.4, dur: 2500 }) }
   foco = { expr: 'pensando', ate: now() + 15000 }; icone = { tipo: 'reticencias', ate: now() + 15000 }
   pushLog('Notícias→ pesquisando…')
   const pedido = `Pesquise as 3 notícias mais importantes de hoje (${new Date().toLocaleDateString('pt-BR')}) no Brasil. Prefira assuntos leves ou úteis; evite violência e tragédias.
 Para cada uma escolha 1 a 3 ícones desta lista: ${Object.keys(ICONES).join(', ')}; e escreva uma frase curta em português (até 14 palavras).
 Responda SÓ JSON: {"noticias": [{"icones": [...], "frase": "..."}]}`
   try {
-    const r = await groq('/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: modelo, messages: [{ role: 'user', content: pedido }], max_completion_tokens: 1800 }) })
-    const j = JSON.parse((String(r.choices[0].message.content).match(/\{[\s\S]*\}/) || ['{}'])[0])
+    const txt = await pesquisarNaWeb(pedido)
+    const j = JSON.parse((String(txt || '').match(/\{[\s\S]*\}/) || ['{}'])[0])
     const quadros = (j.noticias || []).slice(0, 3).map((n) => ({ icones: limparIcones(n.icones).length ? limparIcones(n.icones) : ['mundo'], emocao: 'curioso', frase: String(n.frase || '').slice(0, 140) })).filter((q) => q.frase)
     foco = null; icone = null
     if (!quadros.length) throw new Error('sem notícias na resposta')
