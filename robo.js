@@ -5,7 +5,7 @@
 //   Cérebro = emoções em 3 camadas (personalidade, humor do dia, emoção) + Groq
 // As mensagens entre S3 e C3 passam pelo "bus", que no robô vira a UART.
 
-import { criarServidor } from './servidor.js?v=25'
+import { criarServidor } from './servidor.js?v=27'
 import { criarC3 } from './c3.js?v=24'
 import { ICONES, PALETA, NOME_COR, EMOTES, ELEMENTOS, EXPR, GESTO_DUR as GESTOS, SAIDAS } from './comum.js?v=24'
 const $ = (s) => document.querySelector(s)
@@ -21,7 +21,7 @@ const store = {
 }
 
 // ---------------------------------------------------------------- barramento
-const VERSAO = 'v26 · 09/11'
+const VERSAO = 'v27 · 09/11'
 const logLines = []
 const filaLog = [] // tudo o que aconteceu desde o último envio para o log remoto
 function pushLog(s) {
@@ -828,7 +828,7 @@ async function fimDaFrase(t) {
       return await responder(texto, vh(), { tipo: 'continuou', original: orig })
     }
     if ((RE_ATENCAO.test(texto) || (RE_VOCE.test(texto) && texto.length < 70)) && !outraVoz && now() > vad.modoTVAte && agora - papo.ultimoAtento > 15000) return ficarAtento(texto)
-    if (!outraVoz && palavras <= 18 && respostaLocal(texto)?.acao && /(vamos|bora|quero|me|faz|fa[çc]a|brinc|jog|que m[úu]sica)/i.test(texto)) { abrirConversa(); return await responder(texto, vh()) } // pedido de brincadeira é com ele
+    if (!outraVoz && palavras <= 18 && respostaLocal(texto)?.acao && /(vamos|bora|quero|me|mim|faz|fa[çc]a|brinc|jog|que m[úu]sica|canta|cante|cantarola|desenha)/i.test(texto)) { abrirConversa(); return await responder(texto, vh()) } // pedido de brincadeira é com ele
     if (!outraVoz && (truqueDaFala(texto) || (medo.esperandoAte && RE_CARINHO_NOITE.test(texto)) || /\b(bebi|tomei)\b.*[áa]gua|\breguei\b/i.test(texto))) return await responder(texto, vh()) // truque, consolo e cuidados não precisam do nome
     pushLog(`(ouviu, não era com ele${outraVoz ? ' · voz diferente' : ''}) ${texto.slice(0, 60)}`)
     contarOuvida()
@@ -1257,6 +1257,9 @@ function atualizarLuz(v) {
   if (!luz.escuro) luz.base = lerp(luz.base, luz.nivel, 0.02)
   const escuroAgora = luz.nivel < 30 || (luz.base > 50 && luz.nivel < luz.base * 0.35)
   const claroAgora = luz.nivel > 45 && !(luz.base > 50 && luz.nivel < luz.base * 0.5)
+  luz.seguidas = (!luz.escuro && escuroAgora) || (luz.escuro && claroAgora) ? (luz.seguidas || 0) + 1 : 0
+  if (luz.seguidas < 3) return
+  luz.seguidas = 0
   if (!luz.escuro && escuroAgora) { luz.escuro = true; luz.desde = t; bus.emit('luz_apagou', { label: `brilho ${Math.round(luz.nivel)}` }) }
   else if (luz.escuro && claroAgora) { luz.escuro = false; luz.desde = t; luz.base = luz.nivel; bus.emit('luz_acendeu', { label: `brilho ${Math.round(luz.nivel)}` }) }
 }
@@ -1423,7 +1426,7 @@ function respostaLocal(texto) {
   if (/que horas|hor[áa]rio|horas s[ãa]o/.test(t)) return { ...b, gesto: 'nenhum', emocao: 'contente', icones: ['relogio'], numero: '{hora}', pensamento: v('Olha a hora aqui.', 'Tá aqui!') }
   if (/que dia [ée] hoje|qual (é )?a data|dia de hoje/.test(t) && n <= 12) return { ...b, gesto: 'nenhum', emocao: 'contente', icones: ['calendario'], numero: '{data}', pensamento: 'Hoje é esse dia.' }
   if (/temperatura|quantos graus/.test(t) && n <= 10) return { ...b, gesto: 'nenhum', emocao: clima.temp >= 28 || clima.temp <= 18 ? 'entediado' : 'contente', icones: ['termometro'], numero: '{temp}', pensamento: clima.temp >= 28 ? 'Tá quente!' : clima.temp <= 18 ? 'Tá friozinho…' : 'Tá gostoso.' }
-  if (n <= 18) {
+  if (n <= 18 && !/como funciona|como (se )?joga|quais (s[ãa]o )?as regras|me explica/.test(t)) {
     const ac = (acao, icones, pensamento, extra = {}) => ({ ...b, gesto: 'pulinhos', emocao: 'empolgado', icones, pensamento, acao, ...extra })
     if (/jogo da velha|jogar velha|velhinha/.test(t)) return ac('velha', ['jogo'], 'Bora!')
     if (/que m[úu]sica [ée] essa|qual (é )?(a|essa) m[úu]sica|reconhec\w* (a|essa) m[úu]sica|sabe (que|qual) m[úu]sica/.test(t)) return ac('qual_musica', ['ouvido', 'musica'], 'Deixa eu ouvir!', { gesto: 'nenhum', emocao: 'curioso' })
@@ -1473,7 +1476,7 @@ async function responder(text, vh, contexto) {
   if (sonoIA && !alarme) return respostaSonolenta(text)
   if (interceptarFala(text)) return
   abrirConversa()
-  const ctx = contexto || papo.contexto; papo.contexto = null
+  const ctx = contexto || papo.contexto, tPergunta = now(); papo.contexto = null
   pushLog(`Você: ${text}`)
   legenda(`Você: ${text}`)
   foco = { expr: 'pensando', ate: now() + 15000 }; icone = { tipo: 'reticencias', ate: now() + 15000 }
@@ -1515,6 +1518,9 @@ ELEMENTOS de decoração: ${ELEMENTOS.join(', ')}. CORES: ${Object.entries(NOME_
     if (loc) { r = { j: loc, bruto: JSON.stringify(loc), modelo: 'local', usage: { total_tokens: 0 } }; servidor.registrarTroca(text, loc); servidor.anotarUso('local', 1) }
     else r = await servidor.conversar(text, situacao + extraSono, nivelIA === 'exausto' ? 'fundo' : 'conversa')
     const j = r.j, bruto = r.bruto
+    const demora = (now() - tPergunta) / 1000
+    if (demora > 30) { pushLog(`IA: resposta chegou atrasada (${Math.round(demora)} s); mostro sem fazer a ação "${j.acao || ''}"`); j.acao = '' }
+    if (/como funciona|como (se )?joga|quais (s[ãa]o )?as regras|me explica/i.test(text)) j.acao = '' // pergunta sobre o jogo: explica, não começa
     pushLog(`IA (${servidor.curto(r.modelo || cfg.model)} · ${r.usage?.total_tokens ?? '?'} tokens${r.usage?.prompt_tokens_details?.cached_tokens ? `, ${r.usage.prompt_tokens_details.cached_tokens} do cache` : ''}): ${bruto.slice(0, 300)}`)
     const nome = EMOCOES.includes(j.emocao) ? j.emocao : 'curioso'
     const gest = GESTOS[j.gesto] ? j.gesto : 'nenhum'
@@ -2139,7 +2145,7 @@ let carneirosAte = 0, tocaAqui = null
 function cantarMusica() {
   const mes = hojeData().getMonth()
   const can = sorteia(CANCOES), opcoes = [P.melodia, melodiaDoDia(), melodiaInventada(), mes >= 10 ? JINGLE : VERAO, partitura(can.n, can.bpm)].filter(Boolean)
-  const m = opcoes[Math.floor(Math.random() * opcoes.length)]
+  const m = Math.random() < 0.5 ? opcoes[opcoes.length - 1] : opcoes[Math.floor(Math.random() * opcoes.length)]
   foco = { expr: 'contente', ate: now() + 5000 }; icone = { tipo: 'nota', ate: now() + 5000 }
   iniciarGesto('dancinha'); tocarMelodia(m, 1.05)
   const deCaderno = m === opcoes[opcoes.length - 1]
@@ -2212,7 +2218,9 @@ function numeroFalado(t) {
 let brinc = null
 const SAIR_BRINC = /(^|\s)(para|parar|chega|sair|cansei|acabou)([\s,.!?]|$)/i
 function comecarBrinc(b) { if (brinc) acabarBrinc('trocou de brincadeira'); brinc = b; abrirConversa(); pararImaginacao(); pushLog(`Brincadeira→ ${b.tipo}`) }
-function acabarBrinc(motivo = '') { if (!brinc) return; const b = brinc; brinc = null; try { b.aoAcabar?.() } catch {} pushLog(`Brincadeira→ fim de ${b.tipo}${motivo ? ' (' + motivo + ')' : ''}`) }
+function acabarBrinc(motivo = '') { if (!brinc) return; const b = brinc; brinc = null; try { b.aoAcabar?.() } catch {}
+  if (!/ningu[ée]m|parou de responder/.test(motivo)) abrirConversa()
+  pushLog(`Brincadeira→ fim de ${b.tipo}${motivo ? ' (' + motivo + ')' : ''}`) }
 setInterval(() => { try { brinc?.tick?.(); tickAprenderCara() } catch (e) { pushLog('Brincadeira: ' + e.message) } }, 100)
 const ouviu = (t) => { pushLog(`Você: ${t}`); legenda(`Você: ${t}`) }
 function placarFinal(label, pontos, total, bom) {

@@ -69,6 +69,29 @@ export function criarServidor(cfg, op) {
     }
     throw erro
   }
+  // Gemini "pensando muito" chegou a levar 2 a 4 minutos por resposta (log de 09/11): pensamento no mínimo
+  // e limite de tempo. Se o modelo recusar a opção de pensamento, tenta sem ela e lembra.
+  const semPensar = {}
+  const versaoGemini = (m) => +((/gemini-(\d+(?:\.\d+)?)/.exec(m) || [0, 0])[1])
+  async function chamarGemini(modelo, corpo, limiteMs) {
+    const comPensar = !semPensar[modelo]
+    const gc = { ...(corpo.generationConfig || {}) }
+    if (comPensar) gc.thinkingConfig = versaoGemini(modelo) >= 3 ? { thinkingLevel: 'low' } : { thinkingBudget: 0 }
+    const ctrl = new AbortController(), relogio = setTimeout(() => ctrl.abort(), limiteMs)
+    let r
+    try {
+      r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent`, { method: 'POST', signal: ctrl.signal, headers: { 'Content-Type': 'application/json', 'x-goog-api-key': cfg.geminiKey }, body: JSON.stringify({ ...corpo, ...(Object.keys(gc).length ? { generationConfig: gc } : {}) }) })
+    } catch (e) {
+      if (e.name === 'AbortError') { esfriando['gemini:' + modelo] = Date.now() + 5 * 60000; throw new Error(`Gemini demorou mais de ${Math.round(limiteMs / 1000)} s (descansa 5 min)`) }
+      throw e
+    } finally { clearTimeout(relogio) }
+    if (!r.ok) {
+      const txt = (await r.text()).replace(/\s+/g, ' ')
+      if (r.status === 400 && comPensar && /think/i.test(txt)) { semPensar[modelo] = true; log(`IA: ${modelo} não aceita ajustar o pensamento; sigo sem`); return chamarGemini(modelo, corpo, limiteMs) }
+      throw new Error(`Gemini ${r.status}: ${txt.slice(0, 420)}`)
+    }
+    return r.json()
+  }
   async function pedirGemini(modelo, messages, extra, ferramentas) {
     const sys = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n')
     const contents = []
@@ -78,9 +101,7 @@ export function criarServidor(cfg, op) {
     }
     if (!contents.length || contents[0].role !== 'user') contents.unshift({ role: 'user', parts: [{ text: '(começo da conversa)' }] })
     const corpo = { contents, ...(sys ? { systemInstruction: { parts: [{ text: sys }] } } : {}), ...(ferramentas ? { tools: ferramentas } : { generationConfig: { responseMimeType: 'application/json', temperature: extra.temperature ?? 0.6, maxOutputTokens: 2048 } }) }
-    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': cfg.geminiKey }, body: JSON.stringify(corpo) })
-    if (!r.ok) throw new Error(`Gemini ${r.status}: ${(await r.text()).replace(/\s+/g, ' ').slice(0, 420)}`)
-    const j = await r.json()
+    const j = await chamarGemini(modelo, corpo, ferramentas ? 40000 : 20000)
     const txt = (j.candidates?.[0]?.content?.parts || []).map((x) => x.text || '').join('')
     if (!txt) throw new Error(`Gemini: resposta vazia (${j.candidates?.[0]?.finishReason || j.promptFeedback?.blockReason || '?'})`)
     return { choices: [{ message: { content: txt } }], usage: { total_tokens: j.usageMetadata?.totalTokenCount } }
@@ -317,9 +338,7 @@ Responda SÓ JSON: {"noticias": [{"icones": [...], "frase": "..."}]}`
     for (const m of fila) {
       try {
         const corpo = { contents: [{ role: 'user', parts: partes }], ...(busca ? { tools: [{ google_search: {} }] } : { generationConfig: { responseMimeType: 'application/json', temperature: temperatura, maxOutputTokens: 1024 } }) }
-        const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m.slice(7)}:generateContent`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': cfg.geminiKey }, body: JSON.stringify(corpo) })
-        if (!r.ok) throw new Error(`Gemini ${r.status}: ${(await r.text()).replace(/\s+/g, ' ').slice(0, 300)}`)
-        const j = await r.json()
+        const j = await chamarGemini(m.slice(7), corpo, busca ? 40000 : 30000)
         anotarUso(m, j.usageMetadata?.totalTokenCount)
         return json((j.candidates?.[0]?.content?.parts || []).map((x) => x.text || '').join(''))
       } catch (e) {
