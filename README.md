@@ -57,6 +57,11 @@ Abra https://userm4c.github.io/robo-de-mesa/ no Chrome do Android e toque em "Ac
   - Usa as palavras para cumprimentar, chamar atenção, pedir carinho, comemorar e se assustar. A IA pode escolher palavras da lista dele.
   - Fala cada vez mais vezes conforme o vocabulário e os dias de vida. Cada palavra sai numa voz pt-BR diferente do aparelho, com um chiado de rádio antes, e aparece escrita num balão.
   - No robô de verdade, as palavras viram áudios curtos gerados no homelab.
+- **Voz de robô feita da sua voz** (v32), do jeito que os designers de som de robôs de cinema fazem:
+  - Quando ele aprende uma palavra, pede para você dizer só ela e grava (8 kHz, 8 bits, até 1,6 s, ~10 KB). Também dá para pedir "grava a palavra X" ou usar o painel do 🐞.
+  - Ao tocar: mais agudo, "picotado" (degraus de 8 bits), filtro de rádio, zumbido metálico (modulação em anel), tremido e um bipinho no começo e no fim. O humor muda o tom.
+  - No 🐞 há controles de tom, robótico e tremido. As gravações vão para a memória na nuvem.
+  - Palavra sem gravação usa a voz do sistema.
 - **Versão nova:**
   - Ele percebe a versão nova e pede: "Tem uma versão nova pra mim! Posso atualizar?" (sim / depois).
   - Também dá para pedir com "se atualiza".

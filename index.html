@@ -129,6 +129,17 @@
     <button id="tSincronizar">☁️ Sincronizar memória</button>
   </div>
   <p class="hint">Data vazia = hoje. Escolha uma data perto de uma festa para testar a decoração. "Susto" lá em cima também grava o barulho: três sustos iguais e ele pergunta o que é.</p>
+  <label>Voz do robô (a sua voz, transformada)</label>
+  <div class="row" style="margin-top:0">
+    <select id="vPalavra" style="flex:1;min-width:120px"></select>
+    <button id="vGravar">🎙️ Gravar</button><button id="vOuvir">▶ Ouvir</button><button id="vApagar" class="danger">Apagar</button>
+  </div>
+  <label>Tom (mais agudo →)</label><input id="vTom" type="range" min="0.9" max="2.4" step="0.05" value="1.6">
+  <label>Robótico (picotado e metálico →)</label><input id="vRobo" type="range" min="0" max="1" step="0.05" value="0.5">
+  <label>Tremido</label><input id="vTrem" type="range" min="0" max="1" step="0.05" value="0.4">
+  <div class="row" style="margin-top:4px"><button id="vPadrao">Voltar ao padrão</button></div>
+  <p class="hint" id="vInfo"></p>
+  <p class="hint">Escolha a palavra, toque em Gravar e diga a palavra depois do bip. Ou só ensine falando ("fala carinho") e depois diga a palavra sozinha. Palavras sem gravação usam a voz do sistema.</p>
   <label>Tela (C3) pela UART</label>
   <div class="row" style="margin-top:0">
     <input id="tUart" placeholder="ex.: EXPR feliz · GESTO talvez · BALAO 4000|sol|24°" style="flex:1;min-width:160px" autocomplete="off">
@@ -169,6 +180,6 @@
 </div>
 
 <video id="cam" playsinline muted hidden></video>
-<script type="module" src="robo.js?v=31"></script>
+<script type="module" src="robo.js?v=32"></script>
 </body>
 </html>

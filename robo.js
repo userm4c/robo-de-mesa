@@ -6,7 +6,7 @@
 // As mensagens entre S3 e C3 passam pelo "bus", que no robô vira a UART.
 
 import { criarServidor } from './servidor.js?v=27'
-import { criarMemoria, CHAVES_MEMORIA } from './memoria.js?v=28'
+import { criarMemoria, CHAVES_MEMORIA } from './memoria.js?v=32'
 import { criarC3 } from './c3.js?v=24'
 import { ICONES, PALETA, NOME_COR, EMOTES, ELEMENTOS, EXPR, GESTO_DUR as GESTOS, SAIDAS } from './comum.js?v=24'
 const $ = (s) => document.querySelector(s)
@@ -27,7 +27,7 @@ const store = {
 }
 
 // ---------------------------------------------------------------- barramento
-const VERSAO = 'v31 · 09/11'
+const VERSAO = 'v32 · 09/11'
 const logLines = []
 const filaLog = [] // tudo o que aconteceu desde o último envio para o log remoto
 function pushLog(s) {
@@ -821,6 +821,7 @@ async function fimDaFrase(t) {
     if (!texto || ALUCINACAO.test(texto) || !/[a-zà-ú]{2}/i.test(texto)) return
     if (/^[\s,.!?…-]*((l[aáã]|n[aã]|t[uú]|t[iíì]|d[uú]|p[aá]|po[mn]|h+m+|m+|ah+|uh+|o+h?)[\s,.!?…-]*){2,}$/i.test(texto)) return pushLog(`(cantarolou: ${texto.slice(0, 40)})`)
     eraFala = true
+    if (esperaGravacao && tentarGravarPalavra(texto, chunks, actx.sampleRate)) return
     const chamado = chamouPeloNome(texto), agora = now(), palavras = texto.split(/\s+/).length
     const vh = () => humorDaVoz(resumo)
     const outraVoz = vozDeOutraPessoa(resumo)
@@ -1350,6 +1351,7 @@ async function processarFala(blob, vh) {
   foco = { expr: 'pensando', ate: now() + 15000 }; icone = { tipo: 'reticencias', ate: now() + 15000 }
   let text
   try { text = await transcrever(blob); if (!text) throw new Error('não entendi nada') } catch (err) { return erroConversa(err) }
+  if (esperaGravacao) { try { const ab = await actx.decodeAudioData(await blob.arrayBuffer()); if (tentarGravarPalavra(text, [ab.getChannelData(0)], ab.sampleRate)) { foco = null; icone = null; return } } catch {} }
   await responder(text, vh)
 }
 function erroConversa(err) {
@@ -2799,7 +2801,7 @@ const FIGURINHAS = [
   ['velha', '⭕', 'Ganhou no jogo da velha'], ['shazam', '🎧', 'Reconheceu uma música'], ['aprendeu_musica', '🎼', 'Aprendeu uma música'], ['karaoke', '🎤', 'Continuou a música'],
   ['truque', '🪄', 'Aprendeu um truque'], ['careta_nova', '🤪', 'Aprendeu uma careta'], ['palavra', '📖', 'Palavra do dia'], ['torcida', '⚽', 'Comemorou um gol'],
   ['agua', '💧', '8 copos de água'], ['coragem', '🌙', 'Perdeu o medo do escuro'], ['adivinha', '🔊', 'Adivinhou 3 sons'], ['genius', '🌈', '5 cores de memória'], ['historia2', '📜', 'História a dois'],
-  ['primeira_palavra', '🗣️', 'Falou a primeira palavra'], ['dez_palavras', '💬', 'Sabe falar 10 palavras'], ['atualizou', '🆙', 'Foi atualizado'],
+  ['primeira_palavra', '🗣️', 'Falou a primeira palavra'], ['dez_palavras', '💬', 'Sabe falar 10 palavras'], ['atualizou', '🆙', 'Foi atualizado'], ['voz_gravada', '🎙️', 'Falou com a sua voz'],
 ]
 function figurinha(id) {
   P.album ||= {}
@@ -3730,15 +3732,23 @@ function silabasCrescentes(p) {
 function falar(texto, { gaguejar = false, forcar = false, quieto = false } = {}) {
   if (!window.speechSynthesis || !actx || dormindo) return false
   if (!forcar && (now() < falaAte || gravando || vad.ativo || vad.verificando || captura)) return false
-  const vozes = vozesPt(), pedacos = gaguejar ? silabasCrescentes(texto) : [texto]
-  if (!vozes.length) { pushLog('Fala: este aparelho não tem voz em português'); return false }
+  const clipes = clipesDe(texto)
+  if (clipes) {
+    falaAte = now() + 12000
+    tocarVozRobo(clipes, { partes: gaguejar ? [0.35, 0.6, 1] : [1] })
+    if (!quieto) setTimeout(() => mostrarBalao([], texto.toUpperCase().slice(0, 12), 2600), 150)
+    pushLog(`Fala→ "${texto}" (com a sua voz)${gaguejar ? ' (aprendendo)' : ''}`)
+    return true
+  }
+  const vozesSis = vozesPt(), pedacos = gaguejar ? silabasCrescentes(texto) : [texto]
+  if (!vozesSis.length) { pushLog('Fala: este aparelho não tem voz em português'); return false }
   falaAte = now() + 12000
   const out = actx.createGain(); out.gain.value = 0.18; out.connect(actx.destination)
   ruido(out, actx.currentTime + 0.02, 0.14, 2600) // chiado de rádio
   speechSynthesis.cancel()
   pedacos.forEach((p, i) => {
     const u = new SpeechSynthesisUtterance(p)
-    u.voice = sorteia(vozes); u.lang = u.voice.lang // cada pedaço numa voz diferente, como o Bumblebee
+    u.voice = sorteia(vozesSis); u.lang = u.voice.lang // cada pedaço numa voz diferente, como o Bumblebee
     u.pitch = clamp(1.25 + Math.random() * 0.6, 0, 2); u.rate = gaguejar && i < pedacos.length - 1 ? 0.85 : 1.05; u.volume = 0.95
     if (i === pedacos.length - 1) u.onend = () => { falandoAte = now() + 500 }
     speechSynthesis.speak(u)
@@ -3767,6 +3777,7 @@ function aprenderPalavraFalada(palavra, deQuem = 'sozinho') {
       legendaSempre(`${cfg.nome}: Aprendi a falar “${palavra}”! (${P.fala.vocab.length} palavras)`, 6000)
     }, 3500)
     figurinha(P.fala.vocab.length >= 10 ? 'dez_palavras' : 'primeira_palavra')
+    if (temGente()) pedirGravacao(palavra)
   }
   return true
 }
@@ -3791,6 +3802,8 @@ function tickFala() {
 }
 // "fala carinho", "diz eu te amo", "repete comigo: banana", "aprende a falar meu nome"
 function ensinarFala(text) {
+  const g = /grav(?:a|e|ar) (?:a palavra |minha voz (?:falando|dizendo) |a minha voz (?:falando|dizendo) )([^.!?]{2,24})/i.exec(text)
+  if (g) { ouviu(text); const p = g[1].trim(); if (!(P.fala.vocab || []).some((w) => normPal(w) === normPal(p))) { P.fala.vocab.push(p); store.set('pers', P) } delete vozes[normPal(p)]; esperaGravacao = { palavra: p, ate: now() + 30000 }; legendaSempre(`${cfg.nome}: Pode falar “${p}”! 🎙️`, 9000); return true }
   if (/(fala|diz|diga|fale) (o )?meu nome/i.test(text)) { ouviu(text); aprenderPalavraFalada(cfg.dono, 'você'); return true }
   const m = /^(?:\s*(?:bob-?e|rob[ôo])[,\s]*)?(?:fala|fale|diz|diga|repete(?: comigo)?|repita(?: comigo)?|aprende a falar|aprenda a falar|consegue falar|tenta falar)\s*[:,]?\s+["“']?([^"”']{2,24}?)["”']?[.!?]*$/i.exec(text.trim())
   if (!m) return false
@@ -3804,6 +3817,7 @@ function ensinarFala(text) {
 // instalando" (chuva de letras) e, ao voltar, conta o que aprendeu a fazer.
 const NOVIDADES = {
   v28: [['mundo', 'lembrar de tudo em qualquer aparelho']],
+  v32: [['musica', 'falar com uma voz de robô feita da SUA voz (eu gravo as palavras que você me ensina)']],
   v31: [['gato', 'guardar o nome da sua família e dos seus bichos']],
   v30: [['ideia', 'lembrar qual versão eu era, pra contar as novidades']],
   v29: [['seta_cima', 'perceber quando tem versão nova e pedir pra atualizar'], ['musica', 'falar umas palavrinhas de verdade (e aprender mais)'], ['agua', 'entender “acabei de beber água” e mostrar o copo'], ['ouvido', 'ouvir mais frases por hora']],
@@ -3871,6 +3885,132 @@ function despertarAtualizado(a) {
 }
 
 iniciarFala()
+
+// ================================================================ VOZ DE ROBÔ COM A SUA VOZ (v32)
+// O mesmo truque dos designers de som de robôs de cinema: uma voz humana gravada e transformada.
+// Você diz a palavra, ele grava (curtinho, 8 kHz, 8 bits) e toca de volta mais aguda, "picotada"
+// (8 bits), com tremido e um zumbido metálico (modulação em anel), entre dois bipinhos.
+// No robô de verdade: os clipes ficam na flash do S3 e os mesmos efeitos rodam na hora de tocar.
+const VOZ_PADRAO = { tom: 1.6, robotico: 0.5, tremido: 0.4 }
+let vozes = store.get('vozes', {}) // palavra normalizada → clipe (base64, 8 kHz, 8 bits)
+const salvarVozes = () => store.set('vozes', vozes)
+const vozCfg = () => ({ ...VOZ_PADRAO, ...(P.vozCfg || {}) })
+// Recorta o silêncio, normaliza e guarda em 8 kHz / 8 bits (≈ 8 KB por segundo).
+function clipeDaFala(pedacos, sr) {
+  const n = pedacos.reduce((a, c) => a + c.length, 0), x = new Float32Array(n)
+  let o = 0; for (const c of pedacos) { x.set(c, o); o += c.length }
+  const jan = Math.floor(sr * 0.01), rms = []
+  for (let i = 0; i + jan <= n; i += jan) { let q = 0; for (let k = i; k < i + jan; k++) q += x[k] * x[k]; rms.push(Math.sqrt(q / jan)) }
+  const max = Math.max(...rms, 1e-6), lim = max * 0.12
+  let a = rms.findIndex((v) => v > lim), b = rms.length - 1 - [...rms].reverse().findIndex((v) => v > lim)
+  if (a < 0) return null
+  a = Math.max(0, a - 6); b = Math.min(rms.length - 1, b + 8)
+  const ini = a * jan, fim = Math.min(n, (b + 1) * jan, ini + Math.floor(sr * 1.6))
+  const passo = sr / 8000, m = Math.floor((fim - ini) / passo), u8 = new Uint8Array(m)
+  let pico = 0; for (let i = ini; i < fim; i++) pico = Math.max(pico, Math.abs(x[i]))
+  const ganho = pico > 0 ? 0.92 / pico : 1
+  for (let i = 0; i < m; i++) { const p0 = ini + Math.floor(i * passo), p1 = Math.max(p0 + 1, ini + Math.floor((i + 1) * passo)); let q = 0; for (let k = p0; k < p1; k++) q += x[k]; u8[i] = clamp(Math.round((q / (p1 - p0)) * ganho * 127 + 128), 0, 255) }
+  let s = ''; for (let i = 0; i < u8.length; i += 8192) s += String.fromCharCode(...u8.subarray(i, i + 8192))
+  return btoa(s)
+}
+function bufferDoClipe(b64) {
+  const u8 = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)), buf = actx.createBuffer(1, Math.max(1, u8.length), 8000), ch = buf.getChannelData(0)
+  for (let i = 0; i < u8.length; i++) ch[i] = (u8[i] - 128) / 128
+  return buf
+}
+// Toca uma sequência de clipes com os efeitos. partes: fração de cada clipe (para gaguejar: 0.35, 0.6, 1).
+function tocarVozRobo(clipes, { partes = [1], cfg = vozCfg() } = {}) {
+  if (!actx || !clipes.length) return 0
+  let tom = cfg.tom * (emo.P > 0.3 ? 1.07 : emo.P < -0.2 ? 0.92 : 1) * (N.energia < 0.3 ? 0.9 : 1) // o humor muda a voz
+  tom = clamp(tom, 0.8, 2.6)
+  const r = clamp(cfg.robotico, 0, 1), tr = clamp(cfg.tremido, 0, 1)
+  const out = actx.createGain(); out.gain.value = 1.1; out.connect(actx.destination)
+  // "picotado": degraus de amplitude (8 bits → poucos níveis)
+  const niveis = Math.round(lerp(96, 5, r)), curva = new Float32Array(2048)
+  for (let i = 0; i < curva.length; i++) { const v = i / (curva.length - 1) * 2 - 1; curva[i] = Math.round(v * niveis) / niveis }
+  const crusher = actx.createWaveShaper(); crusher.curve = curva
+  const radio = actx.createBiquadFilter(); radio.type = 'bandpass'; radio.frequency.value = 1700; radio.Q.value = 0.4 + r * 1.2
+  const seco = actx.createGain(); seco.gain.value = 1 - r * 0.55
+  const anel = actx.createGain(); anel.gain.value = 0 // zumbido metálico: o som multiplicado por um oscilador
+  const osc = actx.createOscillator(); osc.frequency.value = 55 + r * 90; const og = actx.createGain(); og.gain.value = r * 0.9
+  osc.connect(og).connect(anel.gain)
+  crusher.connect(radio); radio.connect(seco).connect(out); radio.connect(anel).connect(out)
+  const lfo = actx.createOscillator(); lfo.frequency.value = 6 + tr * 5; const lg = actx.createGain(); lg.gain.value = tr * 160 // tremido (cents)
+  lfo.connect(lg)
+  const t0 = actx.currentTime + 0.06
+  silaba(out, t0, 1800, 2400, 0.05, 'square', 0, 0.25) // bipinho de abertura
+  let t = t0 + 0.09
+  for (const b64 of clipes) {
+    const buf = bufferDoClipe(b64)
+    for (const f of partes) {
+      const src = actx.createBufferSource(); src.buffer = buf; src.playbackRate.value = tom
+      lg.connect(src.detune)
+      const d = buf.duration * f
+      src.connect(crusher); src.start(t, 0, d)
+      t += d / tom + (f < 1 ? 0.18 : 0.08)
+    }
+  }
+  silaba(out, t + 0.02, 2400, 1500, 0.06, 'square', 0, 0.22) // e de fechamento
+  osc.start(t0); lfo.start(t0); osc.stop(t + 0.2); lfo.stop(t + 0.2)
+  const total = (t + 0.1 - actx.currentTime) * 1000
+  falandoAte = Math.max(falandoAte, now() + total + 400)
+  return total
+}
+// Clipes para um texto: a frase inteira gravada, ou cada palavra gravada. Senão, null (usa a voz do sistema).
+function clipesDe(texto) {
+  const k = normPal(texto); if (vozes[k]) return [vozes[k]]
+  const ws = k.split(' ').filter(Boolean)
+  return ws.length && ws.every((w) => vozes[w]) ? ws.map((w) => vozes[w]) : null
+}
+// Depois de aprender uma palavra, pede para você dizer só ela e grava.
+let esperaGravacao = null
+function pedirGravacao(palavra) {
+  if (!cfg.maosLivres || vozes[normPal(palavra)]) return
+  esperaGravacao = { palavra, ate: now() + 30000 }
+  setTimeout(() => legendaSempre(`${cfg.nome}: Agora diz só “${palavra}” pra eu gravar com a sua voz 🎙️`, 9000), 4500)
+}
+function guardarClipe(palavra, b64) {
+  if (!b64) return false
+  vozes[normPal(palavra)] = b64
+  const ks = Object.keys(vozes); if (ks.length > 40) delete vozes[ks[0]] // até 40 palavras gravadas
+  salvarVozes()
+  pushLog(`Voz→ gravei "${palavra}" (${Math.round(b64.length * 0.75 / 1024)} KB)`)
+  setTimeout(() => { tocarVozRobo([b64]); mostrarBalao([], palavra.toUpperCase().slice(0, 12), 2500) }, 500)
+  setTimeout(() => evento({ label: `aprendi a voz de "${palavra}"`, P: 0.4, A: 0.4, interesse: 0.8, expr: 'orgulhoso', gesto: 'pulinhos', forcarGesto: true, dur: 2000 }), 1800)
+  figurinha('voz_gravada')
+  return true
+}
+// Chamado com o áudio de cada frase ouvida: se era a palavra que ele pediu, grava.
+function tentarGravarPalavra(texto, pedacos, sr) {
+  const e = esperaGravacao
+  if (!e || now() > e.ate) { esperaGravacao = null; return false }
+  const p = normPal(e.palavra), t = normPal(texto)
+  if (!(t === p || (t.split(' ').length <= p.split(' ').length + 1 && (t.includes(p) || distancia(t, p) <= 2)))) return false
+  esperaGravacao = null
+  ouviu(texto)
+  return guardarClipe(e.palavra, clipeDaFala(pedacos, sr))
+}
+async function gravarPalavraAgora(palavra) { // pelo painel: conta 3, 2, 1 e grava 1,8 s
+  if (!palavra) return
+  legendaSempre(`${cfg.nome}: Diz “${palavra}” depois do bip!`, 4000)
+  await new Promise((r) => setTimeout(r, 1300))
+  silaba(actx.destination, actx.currentTime + 0.01, 1500, 1500, 0.08, 'sine', 0, 0.3)
+  await new Promise((r) => setTimeout(r, 150))
+  try {
+    const wav = await gravarTrecho(1800)
+    const ab = await actx.decodeAudioData(await wav.arrayBuffer())
+    if (!guardarClipe(palavra, clipeDaFala([ab.getChannelData(0)], ab.sampleRate))) legendaSempre(`${cfg.nome}: Não ouvi nada…`)
+  } catch (e) { pushLog('Voz: ' + e.message) }
+  atualizarPainelVoz()
+}
+function atualizarPainelVoz() {
+  const sel = $('#vPalavra'); if (!sel) return
+  const atual = sel.value; sel.innerHTML = ''
+  for (const w of P.fala?.vocab || []) sel.add(new Option(`${w}${vozes[normPal(w)] ? ' 🎙️' : ''}`, w, false, w === atual))
+  const c = vozCfg(); $('#vTom').value = c.tom; $('#vRobo').value = c.robotico; $('#vTrem').value = c.tremido
+  $('#vInfo').textContent = `${Object.keys(vozes).length} palavra(s) com a sua voz · tom ${c.tom.toFixed(2)} · robótico ${Math.round(c.robotico * 100)}% · tremido ${Math.round(c.tremido * 100)}%`
+}
+
 if (!P.familia) { P.familia = []; for (const m of memorias) anotarFamilia(m.txt.replace(new RegExp('^' + cfg.dono + ' tem', 'i'), 'tenho')) }
 
 // ---------------------------------------------------------------- a fala passa por aqui antes da IA
@@ -4002,6 +4142,15 @@ $('#tData').value = dataSim
 $('#tData').onchange = () => { dataSim = $('#tData').value; store.set('dataSim', dataSim); pushLog('Datas→ simulando ' + (dataSim || 'hoje')) }
 $('#tUartEnviar').onclick = () => { const l = $('#tUart').value.trim(); if (!l) return; if (l.startsWith('TOQUE')) receberDoC3(l); else enviarC3(l) }
 $('#tUart').onkeydown = (e) => { if (e.key === 'Enter') $('#tUartEnviar').click() }
+$('#vPalavra') && (() => {
+  const salvarCfg = () => { P.vozCfg = { tom: +$('#vTom').value, robotico: +$('#vRobo').value, tremido: +$('#vTrem').value }; store.set('pers', P); atualizarPainelVoz() }
+  for (const id of ['#vTom', '#vRobo', '#vTrem']) $(id).oninput = salvarCfg
+  $('#vGravar').onclick = () => gravarPalavraAgora($('#vPalavra').value)
+  $('#vOuvir').onclick = () => { const w = $('#vPalavra').value; if (w) falar(w, { forcar: true }) }
+  $('#vApagar').onclick = () => { delete vozes[normPal($('#vPalavra').value)]; salvarVozes(); atualizarPainelVoz() }
+  $('#vPadrao').onclick = () => { P.vozCfg = { ...VOZ_PADRAO }; store.set('pers', P); atualizarPainelVoz() }
+  new MutationObserver(() => { if (!$('#debug').hidden) atualizarPainelVoz() }).observe($('#debug'), { attributes: true, attributeFilter: ['hidden'] })
+})()
 $('#tEsquecerSons').onclick = () => { sons = []; salvarSons(); pushLog('Sons→ esqueci todos os barulhos') }
 $('#tMelodia').onclick = () => tocarMelodia(P.melodia || melodiaInventada(), 1.1)
 $('#btnDebug').onclick = () => { $('#debug').hidden = !$('#debug').hidden; $('#cfg').hidden = true }
@@ -4066,7 +4215,7 @@ Mãos livres  : ${now() < vad.modoTVAte ? `modo TV (mais ${Math.ceil((vad.modoTV
 Jogo         : ${jogo.fase} · ${jogo.seq.length} notas` : ''}` + `
 Diversão     : ${brinc ? 'brincando de ' + brinc.tipo : '—'}${modoFoco ? ` · foco ${modoFoco.fase}${isFinite(modoFoco.fim) ? ' (' + Math.max(0, Math.ceil((modoFoco.fim - now()) / 60000)) + ' min)' : ''}` : ''}${alarme ? ' · ALARME tocando' : ''} · lembretes ${(P.lembretes || []).map((l) => hhmm(l.quando)).join(', ') || '—'} · álbum ${Object.keys(P.album || {}).length}/${FIGURINHAS.length} · desenhos ${(P.desenhos || []).length}
 Família      : ${(P.familia || []).map((f) => `${f.nome} (${f.quem})`).join(', ') || '—'}
-Fala         : ${P.fala?.vocab?.length || 0} palavra(s): ${(P.fala?.vocab || []).join(', ') || '—'} · vontade de falar ${Math.round(vontadeFalar() * 100)}% · vozes pt ${vozesPt().length}
+Fala         : ${Object.keys(vozes).length} com a sua voz · ${P.fala?.vocab?.length || 0} palavra(s): ${(P.fala?.vocab || []).join(', ') || '—'} · vontade de falar ${Math.round(vontadeFalar() * 100)}% · vozes pt ${vozesPt().length}
 Vida nova    : hobby ${P.hobby?.tema || '—'} · mania ${MANIAS[P.mania] || '—'} · medo do escuro ${Math.round((P.medoEscuro ?? 0) * 100)}% · palavra ${P.palavra?.dia === hojeSv() ? P.palavra.palavra : '—'} · time ${P.time || '—'} · água ${P.agua?.dia === hojeSv() ? P.agua.copos : 0}/8 · truques ${(P.truques || []).length} · caretas ${(P.caretas || []).length} · músicas ${Object.keys(P.musicas || {}).length} · Genius ${P.recordeGenius || 0}
 Terrário     : ${terrario.temp} °C · ${terrario.umid} %${bicho.ativo ? ' · bichinho passeando' : ''} · ${diasDeVida()} dia(s) de vida${P.local ? ' · previsão: ' + (textoPrevisao() || 'carregando') : ''}
 Desempenho   : C3 tela ${c3.perf.quadro.toFixed(1)} ms/quadro (${Math.round(c3.perf.fps)} fps) · S3 cérebro ${perf.cerebro.toFixed(2)} ms a cada 50 ms · ouvido ${perf.ouvido.toFixed(2)} ms a cada 23 ms · tom ${perf.tom.toFixed(2)} ms

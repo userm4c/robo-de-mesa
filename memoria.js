@@ -10,7 +10,7 @@
 //  · se forem dois robôs diferentes (um recém-nascido num aparelho novo), vale o mais velho.
 // As chaves (Groq, Gemini, token) NÃO vão para a nuvem: cada aparelho usa o link pessoal.
 
-export const CHAVES_MEMORIA = ['pers', 'memorias', 'sons', 'necess', 'humor', 'impReflexao', 'imagHoje', 'terrario', 'usoIA']
+export const CHAVES_MEMORIA = ['pers', 'memorias', 'sons', 'necess', 'humor', 'impReflexao', 'imagHoje', 'terrario', 'usoIA', 'vozes']
 const CFG_NUVEM = ['nome', 'dono', 'cidade', 'legenda', 'maosLivres', 'corHumor', 'model', 'stt']
 const CAMINHO = 'memoria/robo.json'
 
@@ -58,6 +58,7 @@ export function criarMemoria(op) {
     }
     const dados = tresVias(local.dados, remoto.dados, base.dados, (k, a, b) => {
       if (k === 'pers') return tresVias(a, b, base.dados.pers || {}, unirPers)
+      if (k === 'vozes') return { ...b, ...a }
       if (k === 'memorias' || k === 'sons' || k === 'usoIA') return mesclar({ t: 1, dados: { [k]: a }, cfg: {} }, { t: 0, dados: { [k]: b }, cfg: {} }).dados[k]
       return undefined
     })
@@ -81,6 +82,7 @@ export function criarMemoria(op) {
     const dados = { ...outro.dados, ...base.dados, pers: P }
     dados.memorias = porChave(base.dados.memorias, outro.dados.memorias, (m) => `${m.t}|${m.txt}`).sort((x, y) => y.t - x.t).slice(0, 120)
     dados.sons = porChave(base.dados.sons, outro.dados.sons, (s) => s.id).slice(-12)
+    dados.vozes = { ...(outro.dados.vozes || {}), ...(base.dados.vozes || {}) } // palavras gravadas dos dois aparelhos
     const ua = a.dados.usoIA, ub = b.dados.usoIA
     if (ua && ub && ua.dia === ub.dia) { const t = { ...ua.t }; for (const [m, v] of Object.entries(ub.t || {})) t[m] = Math.max(t[m] || 0, v); dados.usoIA = { dia: ua.dia, t } }
     return { v: 1, t: Math.max(a.t, b.t) + 1, disp: meta.disp, dados, cfg: { ...outro.cfg, ...base.cfg } }
