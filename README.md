@@ -38,6 +38,17 @@ Abra https://userm4c.github.io/robo-de-mesa/ no Chrome do Android e toque em "Ac
 - **Rotina:** modo foco (Pomodoro com fone e anel de progresso), lembretes e despertador por voz ("me lembra de… às 18h", "daqui a 20 minutos", soneca com bronca), previsão do tempo (Open-Meteo, sem chave), bom dia completo, cor do humor no fundo.
 - **Vida:** bichinho do terrário (sensor simulado por enquanto), presentes surpresa, mêsversário com festa, álbum de 24 figurinhas.
 
+## Música, jogos e vida (v26)
+
+- **Jogo da velha por voz:** você escolhe X ou O e fala o lugar ("centro", "canto superior esquerdo", "meio de baixo", "lado direito" ou "casa 7"). O tabuleiro toma a tela e os olhinhos espiam por cima. Ele erra às vezes (mais quando você anda perdendo); revanche alterna quem começa.
+- **Que música é essa?** Ele ouve 9 s (música tocando, cantarolado ou assobio) e o Gemini reconhece. Com música tocando há mais de 20 s, ele tenta sozinho (até 8 vezes por dia).
+- **Canta a música que você pedir:** caderninho com músicas de domínio público (Brilha brilha estrelinha, Parabéns, Jingle Bells, Ode à Alegria, Frère Jacques, Noite Feliz, Für Elise). Outras ele tenta "de ouvido" pela IA e, se você corrigir assobiando logo depois, aprende do seu jeito. Também dá para ensinar: cantarole e diga "essa é a música X".
+- **No seu ritmo:** repete a sua melodia com as pausas e a duração das notas, faz a segunda voz ou responde com outra frase no mesmo ritmo (duelo). Assobio volta como assobio.
+- **Karaokê ao contrário, adivinha o som** (12 sons sintetizados + os barulhos que ele aprendeu; depois você imita e ele adivinha pelo Gemini), **Genius de cores** (fala as cores em ordem) e **história a dois** em quadrinhos (fica guardada no diário).
+- **Aprende com você:** truques ("quando eu disser abracadabra, você faz a dancinha"), caretas com nome pela câmera ("aprende essa cara: cara de pastel"; depois "faz a cara de pastel", e ele reconhece quando você faz), palavra do dia.
+- **Companhia:** torcedor do seu time ("meu time é o …": agenda do dia, placar ao vivo, comemora gol), pausa depois de 2 h na frente dele, copinho de água ("bebi água", meta de 8), plantas ("me lembra de regar as plantas a cada 3 dias", "reguei"), fica com sono antes de você às 22 h.
+- **Personalidade:** hobby que muda a cada 1–2 semanas, uma mania própria, ciúme leve do celular (olhando para baixo por muito tempo), música do humor (feliz = rápida e maior; triste = devagar e menor) e medo do escuro que passa com carinho.
+
 ## Como o código está dividido (v22–v24)
 
 O protótipo já está separado do jeito que o robô de verdade vai ser:
@@ -48,9 +59,9 @@ O protótipo já está separado do jeito que o robô de verdade vai ser:
 | `c3.js` | firmware do **ESP32-C3** | tela 240×240: rosto, gestos, balão, emotes, acessórios, moldura, névoa. Só desenha o que chega pela UART. |
 | `servidor.js` | gateway Node no **homelab** | toda a IA: modelos, cotas, cache, prompts, conversa, imaginação, desenho, pesquisa. |
 | `comum.js` | tabelas nos dois chips | ícones, cores, emotes, acessórios, expressões, duração dos gestos. |
-| `icones.js` | flash do C3 | 144 ícones 16×16 em 4 bits por pixel (≈21 KB), gerados por `ferramentas/gerar_icones.py`. |
+| `icones.js` | flash do C3 | 159 ícones 16×16 em 4 bits por pixel (≈21 KB), gerados por `ferramentas/gerar_icones.py`. |
 
-**Mensagens S3→C3** (uma linha de texto cada, só quando algo muda): `EXPR`, `OLHAR`, `ATENTO`, `SONO`, `TREME`, `GESTO`, `PISCAR`, `BATIDA`, `ICONE`, `BALAO`, `EMOTE`, `DESENHO`, `ACESS`, `MOLDURA`, `NEVOA`, `LIMPAR`, `HUMOR`, `NUVEM`, `PAINEL`, `SONHO`, `CARNEIROS`, `BICHO`, `ANEL`, `STATUS`. **C3→S3:** `TOQUE x y`. Com o rosto parado passa quase nada; conversando, umas 10–15 mensagens e ~130 bytes por segundo (0,1 % de uma UART a 921600 baud). A lista completa está no começo de `receber()` em `c3.js`.
+**Mensagens S3→C3** (uma linha de texto cada, só quando algo muda): `EXPR`, `OLHAR`, `ATENTO`, `SONO`, `TREME`, `GESTO`, `PISCAR`, `BATIDA`, `ICONE`, `BALAO`, `EMOTE`, `DESENHO`, `ACESS`, `MOLDURA`, `NEVOA`, `LIMPAR`, `HUMOR`, `NUVEM`, `PAINEL`, `SONHO`, `CARNEIROS`, `BICHO`, `ANEL`, `STATUS`, `VELHA`, `COPO`, `COR`. **C3→S3:** `TOQUE x y`. Com o rosto parado passa quase nada; conversando, umas 10–15 mensagens e ~130 bytes por segundo (0,1 % de uma UART a 921600 baud). A lista completa está no começo de `receber()` em `c3.js`.
 
 **Regras de desenho para caber no C3:** pixel art e retângulos não giram (inclinar a cabeça gira só os pontos de encaixe dos olhos e da boca); fundo liso tingido pelo humor em vez de degradê; máscaras dos olhos pintadas com a cor do fundo em vez de recortadas; névoa em pontilhado; transições sem girar nem misturar cores; texto numa fonte de pixel 5×7 própria.
 

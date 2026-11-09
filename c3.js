@@ -103,6 +103,7 @@ export function criarC3(cv, op = {}) {
     expr: 'neutro', olhar: { modo: 'auto', x: 0, y: 0, amp: 0.8, tedio: false, fixoY: null }, atento: false, sono: false, treme: 0,
     icone: null, balao: null, palco: null, vestido: {}, moldura: [], decoT0: 0, nevoa: 0, limpando: null, limpos: [],
     humor: null, nuvem: null, painel: null, sonho: null, carneirosAte: 0, bicho: null, anel: null, status: {},
+    velha: null, copo: null, cor: null,
   }
   const cur = structuredClone(BASE)
   let formaAtual = 'normal', gesto = null, piscar = 0, proxPiscar = now() + 3000, balanco = 0, inclinacao = 0, tAnterior = now()
@@ -115,7 +116,8 @@ export function criarC3(cv, op = {}) {
   // EMOTE nome ms saída volta lado · DESENHO ms saída volta <256 letras de cor> · ACESS a,b,c|-
   // MOLDURA elemento:cores;elemento:cores|- · NEVOA 0..1 · LIMPAR · HUMOR P A|- · NUVEM ic,ic|.|-
   // PAINEL quadro total ic,ic|- · SONHO ic,ic|- · CARNEIROS ms · BICHO x dir vel seco|- · ANEL fase total resta|-
-  // STATUS câmera vad verificando gravando (4 dígitos)
+  // STATUS câmera vad verificando gravando (4 dígitos) · VELHA casas(9: X, O ou .) última|- linha|- · VELHA -
+  // COPO copos meta ms · COR letra ms (círculo colorido do Genius)
   function receber(linha) {
     perf.msgs++
     const i = linha.indexOf(' '), cmd = i < 0 ? linha : linha.slice(0, i), a = i < 0 ? '' : linha.slice(i + 1), p = a.split(' ')
@@ -154,6 +156,9 @@ export function criarC3(cv, op = {}) {
       case 'CARNEIROS': tela.carneirosAte = t + (+a || 7000); break
       case 'BICHO': tela.bicho = a === '-' ? null : { x: +p[0], dir: +p[1] || 1, vel: +p[2] || 36, seco: p[3] === '1' }; break
       case 'ANEL': tela.anel = a === '-' ? null : { fase: p[0], ini: t - (+p[1] - +p[2]), fim: t + +p[2] }; break
+      case 'VELHA': tela.velha = a === '-' ? null : { c: (p[0] || '').padEnd(9, '.').slice(0, 9), ultima: p[1] && p[1] !== '-' ? +p[1] : -1, linha: lista(p[2]).map(Number), t0: t }; break
+      case 'COPO': tela.copo = a === '-' ? null : { n: +p[0] || 0, meta: +p[1] || 8, t0: t, ate: t + (+p[2] || 6000) }; break
+      case 'COR': tela.cor = PALETA[p[0]] ? { c: PALETA[p[0]], t0: t, ate: t + (+p[1] || 500) } : null; break
       case 'STATUS': tela.status = { cam: a[0] === '1', vad: a[1] === '1', verif: a[2] === '1', grav: a[3] === '1' }; break
       default: return false
     }
@@ -486,6 +491,37 @@ export function criarC3(cv, op = {}) {
     return g0.f(k)
   }
 
+  // ---------------------------------------------------------------- jogo da velha e copinho de água
+  // Tabuleiro no lugar do rosto; os olhinhos espiam por cima.
+  function desenharVelha(t, corOlho, fecha) {
+    const v = tela.velha, x0 = 36, y0 = 54, L = 56
+    const ex = olhar.x * 6, ey = olhar.y * 3, h = Math.max(2, 18 * clamp(cur.open, 0.1, 1.2) * fecha)
+    g.fillStyle = corOlho
+    for (const cx of [104, 136]) { g.beginPath(); g.roundRect(cx - 7 + ex, 27 - h / 2 + ey, 14, h, 4); g.fill() }
+    if (cur.happy > 0.3) { g.fillStyle = corFundo(); for (const cx of [104, 136]) { g.beginPath(); g.ellipse(cx + ex, 27 + h * 0.55 + ey, 11, h * 0.45, 0, 0, Math.PI * 2); g.fill() } }
+    g.fillStyle = '#3a4a5a'
+    for (let i = 1; i < 3; i++) { g.fillRect(x0 + i * L - 2, y0 + 4, 4, 3 * L - 8); g.fillRect(x0 + 4, y0 + i * L - 2, 3 * L - 8, 4) }
+    for (let k = 0; k < 9; k++) {
+      const ch = v.c[k]; if (ch === '.') continue
+      const cx = x0 + (k % 3) * L + L / 2, cy = y0 + Math.floor(k / 3) * L + L / 2
+      const nova = k === v.ultima ? clamp((t - v.t0) / 250, 0, 1) : 1, r = 17 * (0.4 + 0.6 * nova)
+      g.lineWidth = 7; g.lineCap = 'round'
+      if (ch === 'X') { g.strokeStyle = '#7df9ff'; g.beginPath(); g.moveTo(cx - r, cy - r); g.lineTo(cx + r, cy + r); g.moveTo(cx + r, cy - r); g.lineTo(cx - r, cy + r); g.stroke() }
+      else { g.strokeStyle = '#ff7eb6'; g.beginPath(); g.arc(cx, cy, r, 0, Math.PI * 2); g.stroke() }
+    }
+    if (v.linha.length === 3 && Math.floor(t / 300) % 2 === 0) { // linha vencedora piscando
+      const c = (k) => [x0 + (k % 3) * L + L / 2, y0 + Math.floor(k / 3) * L + L / 2], a = c(v.linha[0]), b = c(v.linha[2])
+      g.strokeStyle = '#ffd166'; g.lineWidth = 6; g.beginPath(); g.moveTo(a[0], a[1]); g.lineTo(b[0], b[1]); g.stroke()
+    }
+  }
+  function desenharCopo(t) {
+    const c = tela.copo, x = 14, y = 168, w = 30, h = 46
+    const enche = clamp((t - c.t0) / 800, 0, 1), nivel = clamp((c.n - 1 + enche) / c.meta, 0, 1)
+    g.fillStyle = '#2b6cb0'; g.fillRect(x + 3, y + h - 3 - (h - 6) * nivel, w - 6, (h - 6) * nivel)
+    g.strokeStyle = '#d9e2ec'; g.lineWidth = 2.5; g.beginPath(); g.moveTo(x, y); g.lineTo(x + 3, y + h); g.lineTo(x + w - 3, y + h); g.lineTo(x + w, y); g.stroke()
+    texto(`${c.n}/${c.meta}`, x + w / 2, y - 10, 2)
+  }
+
   // ---------------------------------------------------------------- quadro
   function desenharQuadro() {
     const t = now(), dt = Math.min(0.1, (t - tAnterior) / 1000); tAnterior = t
@@ -539,26 +575,29 @@ export function criarC3(cv, op = {}) {
     const w = 54 * cur.size * sx, h = 66 * cur.size * clamp(cur.open, 0.05, 1.3) * fecha * sy
     const fE = nome === 'olho_sonolento' ? 'fechado' : ge.forma || formaAtual, fD = ge.formaD || ge.forma || formaAtual
     const fv = Math.max(0.08, fecha) * (sy / sx)
-    const [x1, y1] = A(74, 104), [x2, y2] = A(166, 104)
-    desenharOlho(x1, y1, w * (1 + cur.asym), h * (1 + cur.asym), -1, cur, corOlho, fE, t, fv, fundo)
-    desenharOlho(x2, y2, w * (1 - cur.asym * 0.6), h * (1 - cur.asym * 0.6), 1, cur, corOlho, fD, t, fv, fundo)
-    if (cur.bochecha > 0.05) { // bochechas coradas
-      g.fillStyle = `rgba(255,120,170,${0.8 * cur.bochecha})`
-      for (const bx of [58, 182]) { const [x, y] = A(bx, 146); g.beginPath(); g.ellipse(x, y, 15 * sx, 7 * sy, 0, 0, Math.PI * 2); g.fill() }
-    }
-    if (cur.lagrimas > 0.05) { // lágrimas caindo
-      g.fillStyle = 'rgb(108,200,255)'
-      for (const [bx, fase] of [[64, 0], [176, 0.5]]) {
-        const k = ((t / 900) + fase) % 1, [x, y0] = A(bx, 132), y = y0 + k * 50
-        g.globalAlpha = cur.lagrimas * (1 - k); g.beginPath(); g.moveTo(x, y - 7); g.quadraticCurveTo(x + 6, y + 3, x, y + 6); g.quadraticCurveTo(x - 6, y + 3, x, y - 7); g.fill()
+    if (tela.velha) desenharVelha(t, corOlho, fecha)
+    else {
+      const [x1, y1] = A(74, 104), [x2, y2] = A(166, 104)
+      desenharOlho(x1, y1, w * (1 + cur.asym), h * (1 + cur.asym), -1, cur, corOlho, fE, t, fv, fundo)
+      desenharOlho(x2, y2, w * (1 - cur.asym * 0.6), h * (1 - cur.asym * 0.6), 1, cur, corOlho, fD, t, fv, fundo)
+      if (cur.bochecha > 0.05) { // bochechas coradas
+        g.fillStyle = `rgba(255,120,170,${0.8 * cur.bochecha})`
+        for (const bx of [58, 182]) { const [x, y] = A(bx, 146); g.beginPath(); g.ellipse(x, y, 15 * sx, 7 * sy, 0, 0, Math.PI * 2); g.fill() }
       }
-      g.globalAlpha = 1
+      if (cur.lagrimas > 0.05) { // lágrimas caindo
+        g.fillStyle = 'rgb(108,200,255)'
+        for (const [bx, fase] of [[64, 0], [176, 0.5]]) {
+          const k = ((t / 900) + fase) % 1, [x, y0] = A(bx, 132), y = y0 + k * 50
+          g.globalAlpha = cur.lagrimas * (1 - k); g.beginPath(); g.moveTo(x, y - 7); g.quadraticCurveTo(x + 6, y + 3, x, y + 6); g.quadraticCurveTo(x - 6, y + 3, x, y - 7); g.fill()
+        }
+        g.globalAlpha = 1
+      }
+      // Boca
+      g.strokeStyle = corOlho; g.fillStyle = corOlho; g.lineWidth = 4 * sx; g.lineCap = 'round'
+      if (cur.mouthOpen > 0.12) { const [x, y] = A(120, 172); g.beginPath(); g.ellipse(x, y, (9 + cur.mouthOpen * 4) * sx, (3 + cur.mouthOpen * 11) * sy, 0, 0, Math.PI * 2); g.fill() }
+      else { const a = A(104, 172), c = A(120, 172 + cur.mouth * 14), b = A(136, 172); g.beginPath(); g.moveTo(a[0], a[1]); g.quadraticCurveTo(c[0], c[1], b[0], b[1]); g.stroke() }
+      desenharAcessorios(t, A)
     }
-    // Boca
-    g.strokeStyle = corOlho; g.fillStyle = corOlho; g.lineWidth = 4 * sx; g.lineCap = 'round'
-    if (cur.mouthOpen > 0.12) { const [x, y] = A(120, 172); g.beginPath(); g.ellipse(x, y, (9 + cur.mouthOpen * 4) * sx, (3 + cur.mouthOpen * 11) * sy, 0, 0, Math.PI * 2); g.fill() }
-    else { const a = A(104, 172), c = A(120, 172 + cur.mouth * 14), b = A(136, 172); g.beginPath(); g.moveTo(a[0], a[1]); g.quadraticCurveTo(c[0], c[1], b[0], b[1]); g.stroke() }
-    desenharAcessorios(t, A)
 
     if (tela.sono) desenharIcone('zzz', t)
     else if (tela.icone) desenharIcone(tela.icone, t)
@@ -569,6 +608,13 @@ export function criarC3(cv, op = {}) {
     desenharCarneiros(t)
     desenharBicho(t, dt)
     if (tela.sono && tela.sonho) { g.save(); g.globalAlpha = 0.45; tela.sonho.forEach((k, i) => desenharIconePx(k, 170 + i * 20, 84, 1)); g.restore() } // o sonho aparece clarinho perto do Zzz
+    if (tela.cor && t < tela.cor.ate) { // Genius: um círculo grande da cor
+      const k = clamp((tela.cor.ate - t) / 120, 0, 1)
+      g.fillStyle = tela.cor.c; g.beginPath(); g.arc(120, 120, 100 * (0.85 + 0.15 * k), 0, Math.PI * 2); g.fill()
+      g.strokeStyle = '#e8f6ff'; g.lineWidth = 3; g.stroke()
+    } else tela.cor = null
+    if (tela.copo && t < tela.copo.ate) desenharCopo(t)
+    else tela.copo = null
     if (tela.palco) { g = gTela; compor(t) }
     desenharNevoa(t)
     desenharMoldura(t)

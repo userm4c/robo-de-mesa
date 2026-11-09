@@ -21,7 +21,7 @@ const store = {
 }
 
 // ---------------------------------------------------------------- barramento
-const VERSAO = 'v25 · 09/11'
+const VERSAO = 'v26 · 09/11'
 const logLines = []
 const filaLog = [] // tudo o que aconteceu desde o último envio para o log remoto
 function pushLog(s) {
@@ -260,7 +260,7 @@ function tickCerebro(dt) {
 
   // Sono: de noite, ou sem energia, ou entediado sozinho por muito tempo (cochilo).
   const parado = (now() - ultimoEvento) / 1000
-  if (!dormindo && parado > 120 && (N.energia < 0.15 || (ehNoite() && parado > 300)) ) dormir(ehNoite() ? 'é de noite' : 'sem energia')
+  if (!dormindo && parado > 120 && (N.energia < 0.15 || (ehNoite() && parado > 300)) ) { if (ehNoite() && temGente()) legendaSempre(`${cfg.nome}: Vou dormir… você devia ir também! Boa noite 😴`, 7000); dormir(ehNoite() ? 'é de noite' : 'sem energia') }
   else if (!dormindo && parado > 1200 && !pessoa.presente) dormir('cochilo')
   else if (!dormindo && luz.escuro && now() - luz.desde > 60000 && parado > 60 && !jogo) dormir('está escuro')
   if (dormindo && !sonoIA && !ehNoite() && !luz.escuro && parado > 60 && ((N.energia > 0.8 && horaDoDia() < 12) || N.energia > 0.95)) { acordar(); setTimeout(() => { iniciarGesto('espreguicar'); somGesto('espreguicar') }, 1300) }
@@ -331,6 +331,7 @@ const COMPORTAMENTOS = {
     fazer: () => { evento({ label: 'coisa demais acontecendo, um respiro', P: -0.05, A: -0.3, interesse: 0.2, expr: 'entediado', gesto: 'suspiro', som: false, dur: 2500 }); N.estimulo -= 0.2 },
   },
   cochilar: { cd: 600000, nota: () => (N.energia < 0.3 && !temGente() ? 0.8 : 0), fazer: () => dormir('cansado') },
+  mania: { cd: 25 * 60000, nota: () => (P.mania && !brinc && papo.estado === 'parado' ? 0.35 + P.extroversao * 0.2 : 0), fazer: () => fazerMania() },
   nada: { cd: 0, nota: () => 0.55, fazer: () => {} },
 }
 function escolherComportamento() {
@@ -583,21 +584,26 @@ function somGesto(nome) {
 function tocarMelodia(notas, vel = 1, op = {}) {
   if (!actx || !notas?.length) return
   const out = actx.createGain(); out.gain.value = 0.22; out.connect(actx.destination)
-  const base = 880 * (0.9 + P.energia * 0.25) // a "voz" dele
+  const base = 880 * (0.9 + P.energia * 0.25) * (op.assobio ? 1.6 : 1) // a "voz" dele (assobio: mais agudo e liso)
+  if (op.assobio) op = { ...op, liso: true }
   const t0 = actx.currentTime + 0.05
   let t = t0
   for (let i = 0; i < notas.length; i++) {
-    const n = notas[i], prox = notas[i + 1] || n, d = clamp(n.d / vel, 0.06, 0.6)
+    if (notas[i].st === null || notas[i].st === undefined) { t += clamp(notas[i].d / vel, 0.03, 1.2); continue } // pausa
+    const n = notas[i], prox = notas[i + 1]?.st != null ? notas[i + 1] : n, d = clamp(n.d / vel, 0.06, 1.2)
     const f0 = base * 2 ** (n.st / 12), f1 = op.liso ? f0 : base * 2 ** ((n.st + (prox.st - n.st) * 0.3) / 12)
     silaba(out, t, f0, f1, d, 'sine', !op.liso && d > 0.25 ? 5 : 0, 0.9)
     t += d + (op.gap ?? 0.015)
   }
   falandoAte = now() + (t - t0) * 1000 + 300
 }
+// Música do humor: feliz = pentatônica maior e rápida; triste = menor e devagar.
 function melodiaInventada() {
-  const escala = [0, 2, 4, 7, 9, 12] // pentatônica: sempre soa bonitinho
+  const p = typeof emo === 'undefined' ? 0 : emo.P
+  const escala = p < -0.2 ? [0, 3, 5, 7, 10, 12] : [0, 2, 4, 7, 9, 12]
+  const ds = p < -0.2 ? [0.25, 0.35, 0.45] : p > 0.3 ? [0.1, 0.14, 0.2] : [0.12, 0.18, 0.25]
   const n = 4 + Math.floor(Math.random() * 4)
-  return Array.from({ length: n }, (_, i) => ({ st: escala[Math.floor(Math.random() * escala.length)] - (i === n - 1 ? 0 : 0), d: [0.12, 0.18, 0.25][Math.floor(Math.random() * 3)] }))
+  return Array.from({ length: n }, (_, i) => ({ st: i === n - 1 ? 0 : escala[Math.floor(Math.random() * escala.length)], d: ds[Math.floor(Math.random() * 3)] }))
 }
 // Reduz o canto captado a notas: um ponto a cada ~120 ms, em semitons relativos à mediana.
 function notasDoCanto(run) {
@@ -607,13 +613,17 @@ function notasDoCanto(run) {
   const notas = []
   let ini = run[0].t, soma = 0, cont = 0
   for (let i = 0; i < run.length; i++) {
+    if (i > 0 && run[i].t - run[i - 1].t > 150) { // silêncio no meio: vira pausa (guarda o ritmo)
+      if (cont) notas.push({ st: clamp(Math.round(soma / cont), -12, 12), d: Math.max(0.08, (run[i - 1].t - ini) / 1000) })
+      notas.push({ st: null, d: (run[i].t - run[i - 1].t) / 1000 }); ini = run[i].t; soma = 0; cont = 0
+    }
     soma += st[i] - med; cont++
     if (run[i].t - ini >= 120 || i === run.length - 1) { notas.push({ st: clamp(Math.round(soma / cont), -12, 12), d: (run[i].t - ini) / 1000 || 0.12 }); ini = run[i].t; soma = 0; cont = 0 }
   }
   // Junta notas iguais seguidas.
   const out = []
-  for (const n of notas) { const u = out[out.length - 1]; if (u && u.st === n.st) u.d += n.d; else out.push({ ...n }) }
-  return out.slice(0, 16)
+  for (const n of notas) { const u = out[out.length - 1]; if (u && u.st === n.st && n.st !== null) u.d += n.d; else out.push({ ...n }) }
+  return out.slice(0, 20)
 }
 
 // ================================================================ S3: OUVIDO
@@ -686,10 +696,11 @@ function ligarEscuta(src) {
   proc.onaudioprocess = (e) => {
     const x = new Float32Array(e.inputBuffer.getChannelData(0)), t = now()
     anel.push({ t, x }); while (anel.length && t - anel[0].t > 2500) anel.shift() // para lembrar do som de um susto
+    capturar(x, t)
     let q = 0; for (let i = 0; i < x.length; i++) q += x[i] * x[i]
     const rms = Math.sqrt(q / x.length)
     vad.nivel = Math.max(rms, vad.nivel * 0.85)
-    const pode = cfg.maosLivres && cfg.key && !gravando && !vad.verificando && !jogo && t > falandoAte && t > conversaAte && !audio.musica
+    const pode = cfg.maosLivres && cfg.key && !gravando && !vad.verificando && !jogo && t > falandoAte && t > conversaAte && !audio.musica && !captura && !brinc?.semVoz
     if (!vad.ativo) {
       vad.piso = rms < vad.piso ? vad.piso * 0.9 + rms * 0.1 : vad.piso * 0.995 + rms * 0.005
       vad.pre.push(x); if (vad.pre.length > PRE) vad.pre.shift()
@@ -758,6 +769,7 @@ function pareceComigo(t, outraVoz) {
   if (RE_VOCE.test(t) || /(^|\s)(te|tu|teu|tua)(\s|[,.!?]|$)/i.test(t)) p += 2
   if (n <= 12) p += 1
   if (/\?\s*$/.test(t)) p += 1
+  if (/(^|\s)(a gente|pra gente|vamos|bora|faz|fa[çc]a|mostra|me (diz|fala|mostra|conta)|joga|jogar|canta|desenha)(\s|[,.!?]|$)/i.test(t)) p += 1
   if (n > 25) p -= 2
   if (/(^|\s)(pessoal|galera|gente|v[ií]deos?|aula|inscrev|canal|t[áa]\?)([\s,.!?]|$)/i.test(t)) p -= 2
   if (outraVoz) p -= 1
@@ -790,6 +802,7 @@ async function fimDaFrase(t) {
   try {
     const texto = await transcrever(paraWav(chunks, actx.sampleRate))
     if (!texto || ALUCINACAO.test(texto) || !/[a-zà-ú]{2}/i.test(texto)) return
+    if (/^[\s,.!?…-]*((l[aáã]|n[aã]|t[uú]|t[iíì]|d[uú]|p[aá]|po[mn]|h+m+|m+|ah+|uh+|o+h?)[\s,.!?…-]*){2,}$/i.test(texto)) return pushLog(`(cantarolou: ${texto.slice(0, 40)})`)
     eraFala = true
     const chamado = chamouPeloNome(texto), agora = now(), palavras = texto.split(/\s+/).length
     const vh = () => humorDaVoz(resumo)
@@ -815,7 +828,8 @@ async function fimDaFrase(t) {
       return await responder(texto, vh(), { tipo: 'continuou', original: orig })
     }
     if ((RE_ATENCAO.test(texto) || (RE_VOCE.test(texto) && texto.length < 70)) && !outraVoz && now() > vad.modoTVAte && agora - papo.ultimoAtento > 15000) return ficarAtento(texto)
-    if (!outraVoz && palavras <= 18 && respostaLocal(texto)?.acao && /(vamos|bora|quero|me|faz|fa[çc]a|brinc|jog)/i.test(texto)) { abrirConversa(); return await responder(texto, vh()) } // pedido de brincadeira é com ele
+    if (!outraVoz && palavras <= 18 && respostaLocal(texto)?.acao && /(vamos|bora|quero|me|faz|fa[çc]a|brinc|jog|que m[úu]sica)/i.test(texto)) { abrirConversa(); return await responder(texto, vh()) } // pedido de brincadeira é com ele
+    if (!outraVoz && (truqueDaFala(texto) || (medo.esperandoAte && RE_CARINHO_NOITE.test(texto)) || /\b(bebi|tomei)\b.*[áa]gua|\breguei\b/i.test(texto))) return await responder(texto, vh()) // truque, consolo e cuidados não precisam do nome
     pushLog(`(ouviu, não era com ele${outraVoz ? ' · voz diferente' : ''}) ${texto.slice(0, 60)}`)
     contarOuvida()
   } catch (e) { pushLog('Mãos livres: ' + e.message) } finally { vad.verificando = false; soltarMelodia(eraFala) }
@@ -1102,15 +1116,23 @@ bus.on('cantarolar', () => {
 bus.on('melodia', ({ notas, tipo }) => {
   if (vad.ativo || vad.verificando) { vad.melodiaPendente = { notas, tipo }; return } // espera saber se era fala
   if (dormindo || gravando) return
+  const tons = notas.filter((n) => n.st !== null).length
+  if (tons >= 3) ultimaMelodia = { notas, t: now() }
+  if (brinc?.melodia) return brinc.melodia(notas)
+  if (correcaoMusica && now() < correcaoMusica.ate && tons >= 5) { const nome = correcaoMusica.nome; correcaoMusica = null; return aprenderMusica(nome, notas) }
   const gosto = P.gostos[tipo] || 0
   if (Math.random() < 0.3 + P.extroversao * 0.5 + gosto * 0.2) {
     setTimeout(() => {
       foco = { expr: 'contente', ate: now() + 3000 }; icone = { tipo: 'nota', ate: now() + 3000 }
-      const harmonia = Math.random() < 0.4
-      tocarMelodia(harmonia ? notas.map((n) => ({ ...n, st: n.st + 4 })) : notas, 1.15) // às vezes faz a segunda voz
-      if (harmonia) pushLog('Cérebro→ fez a segunda voz da sua melodia')
+      // No seu ritmo: às vezes repete igual, às vezes faz a segunda voz, às vezes responde com outra frase no mesmo ritmo.
+      const r = Math.random(), assobio = tipo === 'assobio'
+      if (r < 0.45) { tocarMelodia(notas, 1, { assobio }); pushLog('Cérebro→ repetiu sua melodia no seu ritmo') }
+      else if (r < 0.7) { tocarMelodia(notas.map((n) => (n.st === null ? n : { ...n, st: n.st + 4 })), 1, { assobio }); pushLog('Cérebro→ fez a segunda voz da sua melodia') }
+      else {
+        const esc = [0, 2, 4, 7, 9, 12], resp = notas.map((n, i) => (n.st === null ? n : { ...n, st: i === notas.length - 1 ? 0 : esc[Math.floor(Math.random() * esc.length)] }))
+        tocarMelodia(resp, 1, { assobio }); pushLog('Cérebro→ respondeu sua melodia no mesmo ritmo (duelo!)')
+      }
       N.social = clamp(N.social + 0.05, 0, 1)
-      pushLog('Cérebro→ repetiu sua melodia')
     }, 500)
   }
   // Guarda como favorita (às vezes troca pela mais nova).
@@ -1164,7 +1186,7 @@ async function ligarCamera() {
       const m2 = (a, b) => ((bs[a] || 0) + (bs[b] || 0)) / 2
       bus.emit('face', {
         x: -(x0 + x1 - 1), y: y0 + y1 - 1, tam: x1 - x0, // x espelhado
-        exp: { sorriso: m2('mouthSmileLeft', 'mouthSmileRight'), boca: bs.jawOpen || 0, sobrancelha: bs.browInnerUp || 0, franzido: m2('browDownLeft', 'browDownRight'), piscou: Math.min(bs.eyeBlinkLeft || 0, bs.eyeBlinkRight || 0) },
+        exp: { sorriso: m2('mouthSmileLeft', 'mouthSmileRight'), boca: bs.jawOpen || 0, sobrancelha: bs.browInnerUp || 0, franzido: m2('browDownLeft', 'browDownRight'), piscou: Math.min(bs.eyeBlinkLeft || 0, bs.eyeBlinkRight || 0), piscE: bs.eyeBlinkLeft || 0, piscD: bs.eyeBlinkRight || 0, biquinho: bs.mouthPucker || 0, bochecha: bs.cheekPuff || 0, bocaLado: (bs.mouthLeft || 0) - (bs.mouthRight || 0), olharBaixo: m2('eyeLookDownLeft', 'eyeLookDownRight') },
       })
     }
     medirLuz(video)
@@ -1204,6 +1226,7 @@ function lerRosto(e, t) {
   if (e.piscou > 0.55 && !rosto.piscando) { rosto.piscando = true; if (Math.random() < 0.2 + P.afeto * 0.3) setTimeout(() => enviarC3('PISCAR'), rnd(120, 380)) }
   else if (e.piscou < 0.3) rosto.piscando = false
   rosto.hist.push([t, e.sorriso, e.franzido]); while (rosto.hist.length && rosto.hist[0][0] < t - 60000) rosto.hist.shift()
+  reconhecerCareta(e, t)
 }
 function humorDoRosto() {
   if (!pessoa.presente || rosto.hist.length < 10) return null
@@ -1239,9 +1262,10 @@ function atualizarLuz(v) {
 }
 bus.on('luz_apagou', () => {
   if (dormindo || jogo) return
+  if ((ehNoite() || horaDoDia() >= 21) && (P.medoEscuro ?? 0) >= 0.25 && temGente()) return comMedoDoEscuro()
   if (ehNoite() || horaDoDia() >= 21) {
     evento({ label: 'apagaram a luz', P: 0, A: -0.4, interesse: 0.5, expr: 'sono', icones: ['lua', 'dormir'], som: 'sono', dur: 3000 })
-    setTimeout(() => { if (luz.escuro && !gravando && !jogo && !vad.verificando) dormir('apagaram a luz') }, 4000)
+    setTimeout(() => { if (luz.escuro && !gravando && !jogo && !vad.verificando && !medo.esperandoAte) dormir('apagaram a luz') }, 4000)
   } else evento({ label: 'ué, escureceu', P: -0.15, A: 0.3, interesse: 0.6, expr: 'medo', gesto: 'olhar_em_volta', icones: ['lua', 'pergunta'], som: 'curioso', dur: 2500 })
 })
 bus.on('luz_acendeu', () => {
@@ -1401,6 +1425,17 @@ function respostaLocal(texto) {
   if (/temperatura|quantos graus/.test(t) && n <= 10) return { ...b, gesto: 'nenhum', emocao: clima.temp >= 28 || clima.temp <= 18 ? 'entediado' : 'contente', icones: ['termometro'], numero: '{temp}', pensamento: clima.temp >= 28 ? 'Tá quente!' : clima.temp <= 18 ? 'Tá friozinho…' : 'Tá gostoso.' }
   if (n <= 18) {
     const ac = (acao, icones, pensamento, extra = {}) => ({ ...b, gesto: 'pulinhos', emocao: 'empolgado', icones, pensamento, acao, ...extra })
+    if (/jogo da velha|jogar velha|velhinha/.test(t)) return ac('velha', ['jogo'], 'Bora!')
+    if (/que m[úu]sica [ée] essa|qual (é )?(a|essa) m[úu]sica|reconhec\w* (a|essa) m[úu]sica|sabe (que|qual) m[úu]sica/.test(t)) return ac('qual_musica', ['ouvido', 'musica'], 'Deixa eu ouvir!', { gesto: 'nenhum', emocao: 'curioso' })
+    if (/adivinha (o|esse|um) (som|barulho)|jogo d[oe]s? sons?|adivinhar sons?/.test(t)) return ac('adivinha_som', ['ouvido', 'pergunta'], 'Escuta só!')
+    if (/genius|mem[óo]ria (de|das) cores|jogo das cores|sequ[êe]ncia de cores/.test(t)) return ac('genius', ['jogo'], 'Presta atenção!')
+    if (/hist[óo]ria (a dois|juntos|com voc[êe]|comigo)|(inventar|criar|fazer) uma hist[óo]ria (juntos|com)|vamos (inventar|criar) uma hist/.test(t)) return ac('historia_dupla', ['livro', 'ideia'], 'Eu começo!')
+    if (/karaok[êe]|continua a m[úu]sica|completa a m[úu]sica|eu continuo/.test(t)) return ac('karaoke', ['musica', 'jogo'], 'Bora!')
+    if (/placar|como (est[áa]|t[áa]) o jogo|quanto (est[áa]|t[áa]) o jogo|o jogo (do|de hoje)|deu o jogo/.test(t) && P.time) return ac('placar', ['futebol'], 'Deixa eu ver!', { gesto: 'nenhum', emocao: 'curioso' })
+    { const can = /(cant|cantarol|assobi|toca)/.test(t) && CANCOES.find((c) => c.alias.split('|').some((a) => txtN(t).includes(a)))
+      if (can) return ac('cantar_musica', ['musica'], 'Essa eu sei!', { gesto: 'dancinha', musica: can.nome }) }
+    { const mm = /(?:^|\s)(?:canta|cante|cantarola|cantarole|assobia|assobie)(?: (?:pra mim|para mim|a m[úu]sica|a can[çc][ãa]o|aquela))* (.{3,60})/.exec(t)
+      if (mm && !/^(uma|alguma|qualquer|algo|um pouco|de novo|outra|mais|pra mim)\b/.test(mm[1])) return ac('cantar_musica', ['musica'], 'Lá vai!', { gesto: 'dancinha', musica: mm[1].replace(/[.!?]+$/, '') }) }
     if (/charada/.test(t)) return ac('charada', ['jogo'], 'Bora!')
     if (/(20|vinte) perguntas/.test(t)) return ac('vinte_perguntas', ['pergunta'], 'Pensei numa coisa!')
     if (/quiz|jogo de (soma|conta|matem)|jogo da (soma|conta)/.test(t)) return ac('quiz', ['calculadora'], 'Vamos fazer contas!')
@@ -1475,7 +1510,7 @@ ELEMENTOS de decoração: ${ELEMENTOS.join(', ')}. CORES: ${Object.entries(NOME_
 
 `
     const extraSono = nivelIA === 'exausto' ? '\nVocê está MUITO sonolento (sua cabeça está quase sem energia): responda bem curtinho, com sono, e pode bocejar.' : nivelIA === 'cansado' ? '\nVocê está meio sonolento hoje.' : ''
-    const loc = !ctx && respostaLocal(text)
+    const loc0 = respostaLocal(text), loc = (!ctx || loc0?.acao) && loc0
     let r
     if (loc) { r = { j: loc, bruto: JSON.stringify(loc), modelo: 'local', usage: { total_tokens: 0 } }; servidor.registrarTroca(text, loc); servidor.anotarUso('local', 1) }
     else r = await servidor.conversar(text, situacao + extraSono, nivelIA === 'exausto' ? 'fundo' : 'conversa')
@@ -1529,10 +1564,10 @@ ELEMENTOS de decoração: ${ELEMENTOS.join(', ')}. CORES: ${Object.entries(NOME_
     else if (sobreDeco && /(^|\s)(coloca|coloque|colocar|adiciona|adicione|adicionar|p[õo]e|p[õo]r|bota|botar|acrescenta|acrescente|faz|fa[çc]a|enfeita|enfeite|decora|decore)(\s|$)/i.test(text) && !/(gostei|adorei|amei|lind[oa]|bonit|legal|ficou)/i.test(text)) receberSugestao({ data: dataAtiva()?.id || '', ideia: text.slice(0, 100), elementos: [], cores: [] })
     if (/^\d{1,2}\/\d{1,2}$/.test(j.aniversario_dono || '') && P.anivDono !== j.aniversario_dono) { P.anivDono = j.aniversario_dono; lembrar(`O aniversário de ${cfg.dono} é ${j.aniversario_dono}`, 8); store.set('pers', P) }
     if (ctx?.tipo === 'pesadelo' && v[0] > 0.2) { P.confianca = clamp(P.confianca + 0.02, 0.05, 0.95); lembrar(`${cfg.dono} me consolou depois de um pesadelo`, 7) }
-    if (/^(quiz|charada|vinte_perguntas|careta|imita_eu|ritmo|esconde|ppt)$/.test(j.acao || '')) j.numero = ''
-    const ACAO_COMBINA = { cochilar: /cochil|dorm|descans|sono|cansad/i, ver_desenho: /desenh/i, charada: /charad|advinh|adivinh|emoji/i, vinte_perguntas: /(20|vinte) perguntas|adivinha (o que|qual)|pensa (numa|em uma) coisa/i, quiz: /quiz|conta|soma|matem/i, careta: /careta|imit/i, imita_eu: /imit/i, ritmo: /palma|ritmo/i, esconde: /escond/i, ppt: /pedra|papel|tesoura|jokenp/i, desenhar: /desenh|pint|rabisc/i, dancar: /dan[çc]/i, diario: /di[áa]rio|dia/i, noticias: /not[íi]cia|aconteceu|novidade/i, foco: /foco|trabalh|estud|pomodoro|concentr/i, parar_foco: /foco|terminei|acabei|parar/i, tempo: /chov|chuva|tempo|previs|sol|frio|calor/i, album: /[áa]lbum|figurinha/i, cantar: /cant|m[úu]sica|melodia/i, jogo_melodia: /jog|brinc|melodia/i, repetir_som: /barulh|som|assust/i, contar_historia: /(conta|conte|contar|me fala|quero ouvir|outra|mais uma).*(hist|sonh|imagin)|o que (voc[êe] )?(sonhou|imaginou)/i, boa_noite: /noite|dorm|cochil|sono/i, toca_aqui: /toca|bate|m[ãa]o/i, devanear: /imagin|invent|devane|sonh/i, decorar: /decor|enfeit|natal|festa/i }
+    if (/^(quiz|charada|vinte_perguntas|careta|imita_eu|ritmo|esconde|ppt|velha|genius|adivinha_som|karaoke|historia_dupla)$/.test(j.acao || '')) j.numero = ''
+    const ACAO_COMBINA = { cochilar: /cochil|dorm|descans|sono|cansad/i, ver_desenho: /desenh/i, charada: /charad|advinh|adivinh|emoji/i, vinte_perguntas: /(20|vinte) perguntas|adivinha (o que|qual)|pensa (numa|em uma) coisa/i, quiz: /quiz|conta|soma|matem/i, careta: /careta|imit/i, imita_eu: /imit/i, ritmo: /palma|ritmo/i, esconde: /escond/i, ppt: /pedra|papel|tesoura|jokenp/i, velha: /velha|jogo da/i, adivinha_som: /som|barulh|adivinh/i, genius: /genius|cor|mem[óo]ria/i, historia_dupla: /hist[óo]ria/i, karaoke: /karaok|continu|complet|m[úu]sica/i, qual_musica: /m[úu]sica|can[çc][ãa]o|toca|ouv/i, cantar_musica: /cant|assobi|toca|m[úu]sica/i, placar: /jogo|placar|time|gol|futebol/i, desenhar: /desenh|pint|rabisc/i, dancar: /dan[çc]/i, diario: /di[áa]rio|dia/i, noticias: /not[íi]cia|aconteceu|novidade/i, foco: /foco|trabalh|estud|pomodoro|concentr/i, parar_foco: /foco|terminei|acabei|parar/i, tempo: /chov|chuva|tempo|previs|sol|frio|calor/i, album: /[áa]lbum|figurinha/i, cantar: /cant|m[úu]sica|melodia/i, jogo_melodia: /jog|brinc|melodia/i, repetir_som: /barulh|som|assust/i, contar_historia: /(conta|conte|contar|me fala|quero ouvir|outra|mais uma).*(hist|sonh|imagin)|o que (voc[êe] )?(sonhou|imaginou)/i, boa_noite: /noite|dorm|cochil|sono/i, toca_aqui: /toca|bate|m[ãa]o/i, devanear: /imagin|invent|devane|sonh/i, decorar: /decor|enfeit|natal|festa/i }
     if (j.acao && ACAO_COMBINA[j.acao] && !ACAO_COMBINA[j.acao].test(text)) { pushLog(`IA: ação "${j.acao}" ignorada (não combina com a frase)`); j.acao = '' }
-    const acoes = { cochilar: () => { dormir('cochilo que você pediu'); sono.cochiloAte = now() + 10 * 60000; sono.proxREM = now() + 4 * 60000 }, ver_desenho: () => verDesenho(j.tema || text), charada: brincCharada, vinte_perguntas: brincVinte, quiz: brincQuiz, careta: brincCareta, imita_eu: brincImitaEu, ritmo: brincRitmo, esconde: brincEsconde, ppt: brincPPT, desenhar: () => fazerDesenho(j.tema || ''), dancar, diario: mostrarDiario, noticias: noticiasEmEmojis, foco: () => comecarFoco(), parar_foco: pararFoco, tempo: () => falarDoTempo(text), album: mostrarAlbum, cantar: cantarMusica, jogo_melodia: iniciarJogo, repetir_som: repetirUltimoSom, contar_historia: () => contarHistoria(), boa_noite: ritualBoaNoite, toca_aqui: comecarTocaAqui, devanear: () => devanear(true), decorar: () => decorar(true) }
+    const acoes = { cochilar: () => { dormir('cochilo que você pediu'); sono.cochiloAte = now() + 10 * 60000; sono.proxREM = now() + 4 * 60000 }, ver_desenho: () => verDesenho(j.tema || text), charada: brincCharada, vinte_perguntas: brincVinte, quiz: brincQuiz, careta: brincCareta, imita_eu: brincImitaEu, ritmo: brincRitmo, esconde: brincEsconde, ppt: brincPPT, velha: brincVelha, adivinha_som: brincAdivinhaSom, genius: brincGenius, historia_dupla: brincHistoria2, karaoke: brincKaraoke, qual_musica: () => qualMusica('pedido'), cantar_musica: () => cantarMusicaPedida(j.musica || text), placar: () => conferirJogo('pedido'), desenhar: () => fazerDesenho(j.tema || ''), dancar, diario: mostrarDiario, noticias: noticiasEmEmojis, foco: () => comecarFoco(), parar_foco: pararFoco, tempo: () => falarDoTempo(text), album: mostrarAlbum, cantar: cantarMusica, jogo_melodia: iniciarJogo, repetir_som: repetirUltimoSom, contar_historia: () => contarHistoria(), boa_noite: ritualBoaNoite, toca_aqui: comecarTocaAqui, devanear: () => devanear(true), decorar: () => decorar(true) }
     if (acoes[j.acao]) setTimeout(acoes[j.acao], r.modelo === 'local' ? 1200 : j.acao === 'toca_aqui' ? 2000 : 2600)
     if (RE_TCHAU.test(text) && j.acao !== 'boa_noite') papo.ate = now() + 4000
   } catch (err) { erroConversa(err) }
@@ -1559,6 +1594,7 @@ function estadoVida() {
   const hist = memorias.filter((m) => m.historia).slice(0, 3)
   if (hist.length) out.push(`Histórias suas, para contar se pedirem: ${hist.map((m) => `${m.historia.tipo} "${m.historia.titulo}"`).join(', ')}.`)
   const vest = Object.keys(vestido); if (vest.length) out.push(`Você está usando: ${vest.join(', ')}.`)
+  const v26 = estadoV26(); if (v26) out.push(v26)
   return out.join('\n')
 }
 
@@ -1836,7 +1872,7 @@ async function imaginar(tipo) {
   if (tipo === 'forcado') tipo = 'devaneio'
   try {
     const j = await servidor.imaginar({
-      tipo, epoca: epoca(), tema: sorteia(TEMAS_IMAG),
+      tipo, epoca: epoca(), tema: P.hobby && Math.random() < 0.4 ? P.hobby.tema : sorteia(TEMAS_IMAG),
       personalidade: `extroversão ${P.extroversao.toFixed(2)}, curiosidade ${P.curiosidade.toFixed(2)}, afeto ${P.afeto.toFixed(2)}`,
       gostos: Object.entries(P.gostos).filter(([, v]) => v > 0.2).map(([k]) => k).join(', '),
       titulosAnteriores: memorias.filter((m) => m.historia).slice(0, 6).map((m) => m.historia.titulo),
@@ -2102,13 +2138,16 @@ async function pesquisarIdeia(sug) {
 let carneirosAte = 0, tocaAqui = null
 function cantarMusica() {
   const mes = hojeData().getMonth()
-  const opcoes = [P.melodia, melodiaDoDia(), melodiaDoDia(), melodiaInventada(), mes >= 10 ? JINGLE : VERAO].filter(Boolean)
+  const can = sorteia(CANCOES), opcoes = [P.melodia, melodiaDoDia(), melodiaInventada(), mes >= 10 ? JINGLE : VERAO, partitura(can.n, can.bpm)].filter(Boolean)
   const m = opcoes[Math.floor(Math.random() * opcoes.length)]
   foco = { expr: 'contente', ate: now() + 5000 }; icone = { tipo: 'nota', ate: now() + 5000 }
   iniciarGesto('dancinha'); tocarMelodia(m, 1.05)
-  pushLog(`Cérebro→ cantou (${m === JINGLE ? 'Jingle Bells' : m === P.melodia ? 'a melodia favorita' : m === VERAO ? 'música de verão' : 'uma melodia inventada'})`)
+  const deCaderno = m === opcoes[opcoes.length - 1]
+  if (deCaderno) legendaSempre(`${cfg.nome}: ♪ ${can.nome}`, duracao(m) * 1000 + 2000)
+  pushLog(`Cérebro→ cantou (${m === JINGLE ? 'Jingle Bells' : m === P.melodia ? 'a melodia favorita' : m === VERAO ? 'música de verão' : deCaderno ? can.nome : 'uma melodia inventada'})`)
 }
 function ritualBoaNoite() {
+  if ((P.medoEscuro ?? 0) > 0) { P.medoEscuro = clamp(P.medoEscuro - 0.04, 0, 1); store.set('pers', P) } // boa noite com carinho tira um pouquinho do medo
   pararImaginacao(); sono.touca = true; vestir('touca', true)
   evento({ label: 'boa noite!', P: 0.3, A: -0.5, interesse: 0.5, expr: 'sono', gesto: 'bocejo', forcarGesto: true, icones: ['lua', 'dormir'], som: 'sono', dur: 3000 })
   carneirosAte = now() + 7000
@@ -2173,8 +2212,8 @@ function numeroFalado(t) {
 let brinc = null
 const SAIR_BRINC = /(^|\s)(para|parar|chega|sair|cansei|acabou)([\s,.!?]|$)/i
 function comecarBrinc(b) { if (brinc) acabarBrinc('trocou de brincadeira'); brinc = b; abrirConversa(); pararImaginacao(); pushLog(`Brincadeira→ ${b.tipo}`) }
-function acabarBrinc(motivo = '') { if (!brinc) return; const b = brinc; brinc = null; pushLog(`Brincadeira→ fim de ${b.tipo}${motivo ? ' (' + motivo + ')' : ''}`) }
-setInterval(() => { try { brinc?.tick?.() } catch (e) { pushLog('Brincadeira: ' + e.message) } }, 100)
+function acabarBrinc(motivo = '') { if (!brinc) return; const b = brinc; brinc = null; try { b.aoAcabar?.() } catch {} pushLog(`Brincadeira→ fim de ${b.tipo}${motivo ? ' (' + motivo + ')' : ''}`) }
+setInterval(() => { try { brinc?.tick?.(); tickAprenderCara() } catch (e) { pushLog('Brincadeira: ' + e.message) } }, 100)
 const ouviu = (t) => { pushLog(`Você: ${t}`); legenda(`Você: ${t}`) }
 function placarFinal(label, pontos, total, bom) {
   evento({ label, P: bom ? 0.5 : 0.1, A: 0.4, interesse: 0.8, expr: bom ? 'orgulhoso' : 'rindo', gesto: bom ? 'pulinhos' : 'rir', forcarGesto: true, social: 0.05, dur: 4000, emote: bom ? 'estrela' : null })
@@ -2729,6 +2768,9 @@ const FIGURINHAS = [
   ['vinte', '❓', 'Descobriu nas 20 perguntas'], ['quiz', '🧮', 'Quiz 8 de 10'], ['careta', '😜', 'Imitou 4 caretas'], ['ritmo', '👏', 'Ritmo de 5 palmas'], ['esconde', '🙈', 'Esconde-esconde'],
   ['ppt', '✌️', 'Venceu no pedra-papel-tesoura'], ['desenho', '🎨', 'Primeiro desenho'], ['dancou', '💃', 'Dançou junto'], ['noticias', '📰', 'Contou as notícias'], ['foco', '🎧', 'Um foco completo'],
   ['lembrete', '⏰', 'Lembrou de algo'], ['presente', '🎁', 'Deu um presente'], ['semana', '📅', '7 dias de vida'], ['mes', '🎂', '1 mês de vida'],
+  ['velha', '⭕', 'Ganhou no jogo da velha'], ['shazam', '🎧', 'Reconheceu uma música'], ['aprendeu_musica', '🎼', 'Aprendeu uma música'], ['karaoke', '🎤', 'Continuou a música'],
+  ['truque', '🪄', 'Aprendeu um truque'], ['careta_nova', '🤪', 'Aprendeu uma careta'], ['palavra', '📖', 'Palavra do dia'], ['torcida', '⚽', 'Comemorou um gol'],
+  ['agua', '💧', '8 copos de água'], ['coragem', '🌙', 'Perdeu o medo do escuro'], ['adivinha', '🔊', 'Adivinhou 3 sons'], ['genius', '🌈', '5 cores de memória'], ['historia2', '📜', 'História a dois'],
 ]
 function figurinha(id) {
   P.album ||= {}
@@ -2759,6 +2801,843 @@ function mostrarAlbum() {
   legendaSempre(`${cfg.nome}: ${figs.map((f) => f[2]).join(' · ')}`, 1500 + Math.ceil(figs.length / 3) * 2200)
 }
 
+// ================================================================ MÚSICA, JOGOS E VIDA (v26)
+// ---------------------------------------------------------------- gravar um trecho do microfone (para o Gemini ouvir)
+// Enquanto grava, o "mãos livres" não tenta transcrever (cantarolar não vira frase).
+let captura = null
+function gravarTrecho(ms) {
+  return new Promise((ok, falhou) => {
+    if (!actx) return falhou(new Error('microfone desligado'))
+    if (captura) return falhou(new Error('já estou gravando'))
+    const c = captura = { chunks: [], ate: now() + ms, fim: ok }
+    setTimeout(() => { if (captura === c) { captura = null; falhou(new Error('não chegou som do microfone')) } }, ms + 3000)
+  })
+}
+function capturar(x, t) { // chamada pelo ouvido a cada pedaço de som
+  if (!captura) return
+  captura.chunks.push(x)
+  if (t >= captura.ate) { const c = captura; captura = null; c.fim(paraWav(c.chunks, actx.sampleRate)) }
+}
+async function blobBase64(blob) {
+  const u8 = new Uint8Array(await blob.arrayBuffer()); let s = ''
+  for (let i = 0; i < u8.length; i += 8192) s += String.fromCharCode(...u8.subarray(i, i + 8192))
+  return btoa(s)
+}
+const precisaGemini = (oque) => {
+  if (servidor.temGemini()) return true
+  evento({ label: `${oque}: preciso do Gemini`, P: -0.05, interesse: 0.4, expr: 'timido', gesto: 'nao_sei', forcarGesto: true, icones: ['ouvido', 'pergunta'], dur: 2500 })
+  legendaSempre(`${cfg.nome}: Pra isso eu preciso da chave do Gemini (em ⚙️).`)
+  return false
+}
+
+// ---------------------------------------------------------------- caderninho de músicas (domínio público)
+// Notação: letra da nota (minúscula = oitava do meio, MAIÚSCULA = oitava de baixo, ^ = de cima, # = sustenido)
+// seguida dos tempos (1 = uma batida). "r" é pausa.
+const SEMI = { c: 0, d: 2, e: 4, f: 5, g: 7, a: 9, b: 11 }
+function partitura(txt, bpm) {
+  const bat = 60 / bpm
+  return txt.trim().split(/\s+/).map((tk) => {
+    const m = /^([a-gA-Gr])(#?)(\^?)([\d.]*)$/.exec(tk); if (!m) return null
+    const d = (+m[4] || 1) * bat
+    if (m[1] === 'r') return { st: null, d }
+    return { st: SEMI[m[1].toLowerCase()] + (m[2] ? 1 : 0) + (m[3] ? 12 : 0) - (m[1] === m[1].toUpperCase() ? 12 : 0), d }
+  }).filter(Boolean)
+}
+const CANCOES = [
+  { nome: 'Brilha, brilha, estrelinha', alias: 'brilha brilha|estrelinha|twinkle', bpm: 110, n: 'c c g g a a g2 f f e e d d c2 g g f f e e d2 g g f f e e d2 c c g g a a g2 f f e e d d c2' },
+  { nome: 'Parabéns pra você', alias: 'parabens|aniversario|happy birthday', bpm: 100, n: 'G.75 G.25 A G c B2 G.75 G.25 A G d c2 G.75 G.25 g e c B A2 f.75 f.25 e c d c2' },
+  { nome: 'Jingle Bells', alias: 'jingle|bate o sino|sino de natal', bpm: 170, n: 'e e e2 e e e2 e g c1.5 d.5 e4 f f f1.5 f.5 f e e e.5 e.5 e d d e d2 g2' },
+  { nome: 'Ode à Alegria', alias: 'ode a alegria|hino a alegria|beethoven|nona sinfonia', bpm: 120, n: 'e e f g g f e d c c d e e1.5 d.5 d2 e e f g g f e d c c d e d1.5 c.5 c2' },
+  { nome: 'Frère Jacques (Irmão Jacó)', alias: 'frere jacques|irmao jaco|frei jaco|dorme jaco', bpm: 120, n: 'c d e c c d e c e f g2 e f g2 g.5 a.5 g.5 f.5 e c g.5 a.5 g.5 f.5 e c c G c2 c G c2' },
+  { nome: 'Noite Feliz', alias: 'noite feliz|silent night', bpm: 95, n: 'g1.5 a.5 g e3 g1.5 a.5 g e3 d^2 d^ b3 c^2 c^ g3 a2 a c^1.5 b.5 a g1.5 a.5 g e3 a2 a c^1.5 b.5 a g1.5 a.5 g e3 d^2 d^ f^1.5 d^.5 b c^3 e^3' },
+  { nome: 'Für Elise', alias: 'fur elise|para elisa', bpm: 130, n: 'e^.5 d#^.5 e^.5 d#^.5 e^.5 b.5 d^.5 c^.5 a1.5 c.5 e.5 a.5 b1.5 e.5 g#.5 b.5 c^2' },
+]
+function acharMusica(nome) {
+  const n = palavrasN(nome)
+  const aprendida = Object.keys(P.musicas || {}).find((k) => n.includes(palavrasN(k).trim()) || palavrasN(k).includes(n.trim()))
+  if (aprendida && n.trim()) return { nome: aprendida, notas: P.musicas[aprendida], aprendida: true }
+  const c = CANCOES.find((x) => x.alias.split('|').some((a) => n.includes(' ' + a + ' ') || n.includes(a)))
+  return c ? { nome: c.nome, notas: partitura(c.n, c.bpm) } : null
+}
+const duracao = (notas) => notas.reduce((a, x) => a + x.d, 0)
+// Depois de cantar uma música "de ouvido", ele fica um tempinho esperando a correção assobiada.
+let correcaoMusica = null
+async function cantarMusicaPedida(nome) {
+  nome = String(nome || '').replace(/^(a |o )?(m[úu]sica |can[çc][ãa]o )?(do |da |de )?/i, '').trim()
+  if (!nome) return cantarMusica()
+  let m = acharMusica(nome), deOuvido = false
+  if (!m) {
+    foco = { expr: 'pensando', ate: now() + 6000 }; icone = { tipo: 'reticencias', ate: now() + 6000 }
+    try {
+      const j = await servidor.notasDaMusica(nome)
+      if (j.conhece !== false && Array.isArray(j.notas) && j.notas.length >= 4) {
+        const bat = 60 / clamp(+j.bpm || 110, 60, 180)
+        m = { nome: j.titulo || nome, notas: j.notas.slice(0, 28).map((x) => ({ st: x[0] === null ? null : clamp(Math.round(+x[0] || 0), -12, 19), d: clamp((+x[1] || 1) * bat, 0.08, 1.4) })) }
+        deOuvido = true
+      }
+    } catch (e) { pushLog('Música: ' + e.message) }
+    foco = null; icone = null
+  }
+  if (!m) {
+    evento({ label: `não sei cantar ${nome}`, P: -0.05, interesse: 0.5, expr: 'timido', gesto: 'nao_sei', forcarGesto: true, icones: ['musica', 'pergunta'], dur: 2500 })
+    legendaSempre(`${cfg.nome}: Não conheço “${nome}”… me ensina? Cantarola ela pra mim e depois diz “essa é ${nome}”.`)
+    return
+  }
+  foco = { expr: 'contente', ate: now() + duracao(m.notas) * 1000 + 800 }; icone = { tipo: 'nota', ate: foco.ate }
+  legendaSempre(`${cfg.nome}: ♪ ${m.nome}${deOuvido ? ' (acho que é mais ou menos assim…)' : ''}`, duracao(m.notas) * 1000 + 2500)
+  tocarMelodia(m.notas, 1, { assobio: Math.random() < 0.3 })
+  pushLog(`Música→ cantou ${m.nome}${m.aprendida ? ' (do jeito que você ensinou)' : deOuvido ? ' (de ouvido, pela IA)' : ' (do caderninho)'}`)
+  if (deOuvido) correcaoMusica = { nome: m.nome, ate: now() + duracao(m.notas) * 1000 + 25000 }
+}
+// Você ensina: cantarola e diz "essa é a música X" (ou corrige logo depois de ele cantar).
+let ultimaMelodia = null
+function aprenderMusica(nome, notas) {
+  P.musicas ||= {}; P.musicas[nome] = notas.slice(0, 32); store.set('pers', P)
+  lembrar(`${cfg.dono} me ensinou a cantar ${nome}`, 6)
+  evento({ label: `aprendi a música ${nome}!`, P: 0.4, A: 0.4, interesse: 0.8, expr: 'orgulhoso', gesto: 'pulinhos', forcarGesto: true, icones: ['musica', 'certo'], dur: 2500 })
+  legendaSempre(`${cfg.nome}: Aprendi “${nome}”! Agora sei cantar do seu jeito.`)
+  setTimeout(() => tocarMelodia(notas, 1), 2200)
+  figurinha('aprendeu_musica')
+}
+
+// ---------------------------------------------------------------- "que música é essa?"
+let reconhecendo = false
+const musicaSessao = { desde: 0, tentou: false }
+async function qualMusica(origem = 'pedido') {
+  if (reconhecendo || !precisaGemini('Reconhecer música')) return
+  reconhecendo = true
+  try {
+    if (origem === 'pedido') {
+      evento({ label: 'ouvindo a música', P: 0.1, A: 0.3, interesse: 0.8, expr: 'ouvindo', icones: ['ouvido', 'musica'], som: false, dur: 2500 })
+      legendaSempre(`${cfg.nome}: Pode cantarolar, assobiar ou deixar tocar… tô ouvindo! 🎵`, 10000)
+      await new Promise((r) => setTimeout(r, 1200))
+    }
+    foco = { expr: 'ouvindo', ate: now() + 9500 }; icone = { tipo: 'nota', ate: now() + 9500 }
+    const wav = await gravarTrecho(origem === 'pedido' ? 9000 : 8000)
+    foco = { expr: 'pensando', ate: now() + 8000 }; icone = { tipo: 'reticencias', ate: now() + 8000 }
+    const j = await servidor.identificarMusica(await blobBase64(wav))
+    foco = null; icone = null
+    pushLog(`Música→ ouviu ${j.o_que_ouviu || '?'}: ${j.titulo || '(não reconheceu)'}${j.artista ? ' — ' + j.artista : ''} (${Math.round((+j.confianca || 0) * 100)}%)`)
+    P.idMusica = { dia: hojeSv(), n: (P.idMusica?.dia === hojeSv() ? P.idMusica.n : 0) + 1 }
+    if (j.titulo && +j.confianca >= (origem === 'pedido' ? 0.45 : 0.6)) {
+      const conhecida = acharMusica(j.titulo)
+      evento({ label: `reconheci a música: ${j.titulo}`, P: 0.35, A: 0.5, interesse: 0.85, expr: 'empolgado', gesto: 'pulinhos', forcarGesto: true, icones: ['musica', 'certo'], dur: 3000 })
+      legendaSempre(`${cfg.nome}: ${+j.confianca < 0.7 ? 'Acho que é' : 'É'} “${j.titulo}”${j.artista ? ' — ' + j.artista : ''}!${conhecida ? ' Essa eu sei!' : ''}`, 7000)
+      P.musicasOuvidas = [{ titulo: j.titulo, artista: j.artista || '', t: Date.now() }, ...(P.musicasOuvidas || []).filter((x) => x.titulo !== j.titulo)].slice(0, 20)
+      lembrar(`Ouvi a música ${j.titulo}${j.artista ? ' (' + j.artista + ')' : ''} com ${cfg.dono}`, 3)
+      figurinha('shazam')
+      if (conhecida && origem === 'pedido') setTimeout(() => { tocarMelodia(conhecida.notas, 1); foco = { expr: 'musica', ate: now() + duracao(conhecida.notas) * 1000 } }, 3200)
+    } else if (origem === 'pedido') {
+      evento({ label: 'não reconheci a música', P: -0.05, interesse: 0.5, expr: 'timido', gesto: 'nao_sei', forcarGesto: true, icones: ['musica', 'pergunta'], dur: 2500 })
+      legendaSempre(`${cfg.nome}: ${j.o_que_ouviu === 'silencio' ? 'Não ouvi nada…' : 'Essa eu não reconheci… qual é?'}`)
+    }
+    store.set('pers', P)
+  } catch (e) {
+    pushLog('Música: ' + e.message); foco = null; icone = null
+    if (origem === 'pedido') evento({ label: 'não consegui ouvir a música', gesto: 'nao_sei', forcarGesto: true, icones: ['ouvido', 'errado'], interesse: 0.4, dur: 2000 })
+  } finally { reconhecendo = false }
+}
+function tickMusicaOuvida() { // música tocando faz tempo: ele tenta reconhecer sozinho (poucas vezes por dia)
+  if (!audio.musica) { musicaSessao.desde = 0; musicaSessao.tentou = false; return }
+  if (!musicaSessao.desde) musicaSessao.desde = now()
+  const hoje = P.idMusica?.dia === hojeSv() ? P.idMusica.n : 0
+  if (!musicaSessao.tentou && now() - musicaSessao.desde > 20000 && hoje < 8 && servidor.temGemini() && nivelIA === 'ok' && !dormindo && !brinc && !gravando && audio.testeAte < now()) {
+    musicaSessao.tentou = true; qualMusica('auto')
+  }
+}
+
+// ---------------------------------------------------------------- jogo da velha (por voz)
+const LINHAS_VELHA = [[0, 1, 2], [3, 4, 5], [6, 7, 8], [0, 3, 6], [1, 4, 7], [2, 5, 8], [0, 4, 8], [2, 4, 6]]
+function fimDaVelha(c) {
+  for (const l of LINHAS_VELHA) if (c[l[0]] !== '.' && c[l[0]] === c[l[1]] && c[l[1]] === c[l[2]]) return { p: c[l[0]], l }
+  return c.includes('.') ? null : { p: 'empate', l: [] }
+}
+function minimaxVelha(c, eu, vez, prof = 0) {
+  const f = fimDaVelha(c)
+  if (f) return f.p === 'empate' ? 0 : f.p === eu ? 10 - prof : prof - 10
+  const outro = vez === 'X' ? 'O' : 'X'
+  let melhor = vez === eu ? -99 : 99
+  for (let i = 0; i < 9; i++) if (c[i] === '.') {
+    c[i] = vez; const v = minimaxVelha(c, eu, outro, prof + 1); c[i] = '.'
+    melhor = vez === eu ? Math.max(melhor, v) : Math.min(melhor, v)
+  }
+  return melhor
+}
+function jogadaDoRobo(c, eu, erra) {
+  const livres = c.map((v, i) => (v === '.' ? i : -1)).filter((i) => i >= 0)
+  if (Math.random() < erra) return sorteia(livres)
+  const outro = eu === 'X' ? 'O' : 'X'
+  let melhor = -99, ops = []
+  for (const i of livres) { c[i] = eu; const v = minimaxVelha(c, eu, outro); c[i] = '.'; if (v > melhor) { melhor = v; ops = [i] } else if (v === melhor) ops.push(i) }
+  return sorteia(ops)
+}
+// "canto superior esquerdo", "centro", "meio de cima", "lado direito", "casa 7"…
+function casaFalada(texto) {
+  const t = txtN(texto)
+  let r = null, c = null
+  if (/superior|em cima|de cima|\bcima\b|\balto\b|topo|primeira linha|linha de cima/.test(t)) r = 0
+  if (/inferior|embaixo|em baixo|de baixo|\bbaixo\b|ultima linha|terceira linha|linha de baixo/.test(t)) r = 2
+  if (/esquerd/.test(t)) c = 0
+  if (/direit/.test(t)) c = 2
+  const meio = /centro|\bmeio\b|central|segunda linha/.test(t)
+  if (r === null && c === null) {
+    if (meio) return 4
+    const n = numeroFalado(t); return n >= 1 && n <= 9 ? n - 1 : null
+  }
+  if (r === null) r = 1
+  if (c === null) c = 1
+  return r * 3 + c
+}
+function pecaFalada(texto) {
+  const t = palavrasN(texto)
+  if (/ (x|xis|chis|xiz|cruz|xizinho) /.test(t)) return 'X'
+  if (/ (bola|bolinha|circulo|zero|o|oh|ó) /.test(t) || /^\s*[oó][.!]?\s*$/i.test(texto)) return 'O'
+  return null
+}
+const NOME_CASA = ['canto de cima à esquerda', 'meio de cima', 'canto de cima à direita', 'meio da esquerda', 'centro', 'meio da direita', 'canto de baixo à esquerda', 'meio de baixo', 'canto de baixo à direita']
+function brincVelha() {
+  const b = { tipo: 'velha', fase: 'escolha', c: [...'.........'], voce: null, eu: null, vez: 'X', placar: [0, 0, 0], ultima: -1, linha: [], quemComeca: 'X', espera: 0, avisos: 0 }
+  const tela = () => enviarC3(`VELHA ${b.c.join('')} ${b.ultima >= 0 ? b.ultima : '-'} ${b.linha.length ? b.linha.join(',') : '-'}`)
+  const suaVez = () => { b.fase = 'voce'; b.espera = now(); b.avisos = 0; legendaSempre(`${cfg.nome}: Sua vez (${b.voce})! Fala o lugar: centro, canto superior esquerdo, meio de baixo…`, 9000) }
+  const conferirFim = () => {
+    const f = fimDaVelha(b.c); if (!f) return false
+    b.linha = f.l; tela(); b.fase = 'fim'
+    if (f.p === 'empate') { b.placar[2]++; evento({ label: 'velha: deu velha (empate)', P: 0.1, A: 0.2, interesse: 0.7, expr: 'rindo', gesto: 'talvez', forcarGesto: true, dur: 2500 }); legendaSempre(`${cfg.nome}: Deu velha! Empate. Mais uma?`) }
+    else if (f.p === b.voce) { b.placar[0]++; P.velhaPerdas = 0; evento({ label: 'velha: você ganhou', P: 0.05, A: 0.4, interesse: 0.8, expr: 'surpreso', gesto: 'desmaiar', forcarGesto: true, som: 'triste', dur: 2800 }); legendaSempre(`${cfg.nome}: Você ganhou! Como assim?! Revanche?`); figurinha('velha') }
+    else { b.placar[1]++; P.velhaPerdas = (P.velhaPerdas || 0) + 1; evento({ label: 'velha: eu ganhei', P: 0.4, A: 0.5, interesse: 0.8, expr: 'orgulhoso', gesto: 'dancinha', forcarGesto: true, som: 'feliz', dur: 2800 }); legendaSempre(`${cfg.nome}: Ganhei! Hehe. Mais uma?`) }
+    setTimeout(() => brinc === b && mostrarBalao([], `${b.placar[0]}x${b.placar[1]}`, 3500), 1500)
+    b.espera = now(); store.set('pers', P)
+    return true
+  }
+  const roboJoga = () => {
+    if (brinc !== b) return
+    b.fase = 'eu'; foco = { expr: 'pensando', ate: now() + 1300 }; icone = { tipo: 'reticencias', ate: now() + 1300 }
+    setTimeout(() => {
+      if (brinc !== b) return
+      // Erra às vezes, e mais quando você anda perdendo (para ficar divertido).
+      const i = jogadaDoRobo(b.c, b.eu, clamp(0.18 + (P.velhaPerdas || 0) * 0.08, 0.1, 0.5))
+      b.c[i] = b.eu; b.ultima = i; tela(); somDe('curioso', 0.3); batida(0.5)
+      pushLog(`Velha→ eu joguei no ${NOME_CASA[i]}`)
+      if (!conferirFim()) { b.vez = b.voce; suaVez() }
+    }, 1300)
+  }
+  const novaPartida = () => {
+    b.c = [...'.........']; b.ultima = -1; b.linha = []; b.vez = b.quemComeca; tela()
+    if (b.vez === b.eu) { legendaSempre(`${cfg.nome}: Eu começo!`); roboJoga() } else suaVez()
+    b.quemComeca = b.quemComeca === 'X' ? 'O' : 'X' // na próxima, o outro começa
+  }
+  b.tick = () => {
+    if (b.fase === 'voce' && now() - b.espera > 45000 * (b.avisos + 1)) {
+      if (++b.avisos >= 4) return acabarBrinc('ninguém jogou')
+      evento({ label: 'velha: esperando sua jogada', interesse: 0.4, expr: 'curioso', gesto: 'olhar_em_volta', dur: 1500 }); legendaSempre(`${cfg.nome}: E aí? É sua vez (${b.voce}).`)
+    }
+    if ((b.fase === 'fim' || b.fase === 'escolha') && now() - b.espera > 90000) acabarBrinc('parou de responder')
+  }
+  b.ouvir = (t) => {
+    ouviu(t)
+    if (SAIR_BRINC.test(t) && !/n[ãa]o para/i.test(t)) { acabarBrinc('parou'); return true }
+    if (b.fase === 'escolha') {
+      const p = pecaFalada(t)
+      if (!p && t.split(/\s+/).length > 5) return false
+      if (!p) { legendaSempre(`${cfg.nome}: X ou O (bolinha)?`); iniciarGesto('nao_sei'); return true }
+      b.voce = p; b.eu = p === 'X' ? 'O' : 'X'
+      evento({ label: `velha: você é ${p}`, P: 0.2, A: 0.3, interesse: 0.8, expr: 'empolgado', gesto: 'sim', forcarGesto: true, dur: 1200 })
+      legendaSempre(`${cfg.nome}: Você é ${p === 'X' ? 'X' : 'O (bolinha)'}, eu sou ${b.eu === 'X' ? 'X' : 'O'}. O X começa!`)
+      b.quemComeca = 'X'; setTimeout(novaPartida, 1800); return true
+    }
+    if (b.fase === 'fim') {
+      if (RE_NAO.test(t) || /chega|cansei/i.test(t)) { acabarBrinc('acabou'); placarFinal(`velha: ${b.placar[0]} x ${b.placar[1]}`, b.placar[0], b.placar[0] + b.placar[1] + b.placar[2], b.placar[0] >= b.placar[1]); return true }
+      if (RE_SIM.test(t) || /de novo|outra|mais uma|bora|vamos|revanche/i.test(t)) { novaPartida(); return true }
+      return true
+    }
+    if (b.fase !== 'voce') { legendaSempre(`${cfg.nome}: Calma, é a minha vez!`); return true }
+    const i = casaFalada(t)
+    if (i === null && t.split(/\s+/).length > 5) return false // frase comprida que não é jogada: segue para a conversa
+    if (i === null) { iniciarGesto('nao_sei'); legendaSempre(`${cfg.nome}: Onde? Fala tipo: “centro”, “canto inferior direito”, “meio de cima”.`, 7000); return true }
+    if (b.c[i] !== '.') { iniciarGesto('nao'); somDe('bravo', 0.2); legendaSempre(`${cfg.nome}: O ${NOME_CASA[i]} já tem peça! Escolhe outro.`); return true }
+    b.c[i] = b.voce; b.ultima = i; tela(); somDe('neutro', 0.25)
+    if (!conferirFim()) { b.vez = b.eu; roboJoga() }
+    return true
+  }
+  b.aoAcabar = () => enviarC3('VELHA -')
+  comecarBrinc(b)
+  pararImaginacao(); balao = null
+  tela()
+  evento({ label: 'jogo da velha!', P: 0.3, A: 0.5, interesse: 0.9, expr: 'empolgado', gesto: 'pulinhos', forcarGesto: true, dur: 1500 })
+  legendaSempre(`${cfg.nome}: Jogo da velha! Você quer ser X ou O (bolinha)?`, 9000)
+  b.espera = now()
+}
+
+// ---------------------------------------------------------------- karaokê ao contrário: ele começa, você continua
+function brincKaraoke() {
+  const b = { tipo: 'karaoke', rodada: 0, total: 3, pontos: 0, semVoz: false, atual: null }
+  const lista = [...CANCOES.map((c) => ({ nome: c.nome, notas: partitura(c.n, c.bpm) })), ...Object.entries(P.musicas || {}).map(([nome, notas]) => ({ nome, notas }))].filter((m) => m.notas.filter((n) => n.st !== null).length >= 8).sort(() => Math.random() - 0.5)
+  b.proxima = () => {
+    if (brinc !== b) return
+    if (b.rodada >= b.total || !lista[b.rodada]) { acabarBrinc(); placarFinal(`karaokê: ${b.pontos}/${b.rodada}`, b.pontos, b.rodada, b.pontos >= 2); if (b.pontos) figurinha('karaoke'); return }
+    const m = lista[b.rodada++], so = m.notas.filter((n) => n.st !== null), meio = Math.floor(so.length / 2)
+    b.atual = { nome: m.nome, resto: so.slice(meio, meio + 6).map((n) => n.st) }
+    const comeco = so.slice(0, meio)
+    legendaSempre(`${cfg.nome}: Rodada ${b.rodada} de ${b.total}: continua essa! (cantarola ou assobia)`, 6000)
+    foco = { expr: 'musica', ate: now() + duracao(comeco) * 1000 }; tocarMelodia(comeco, 1)
+    setTimeout(() => { if (brinc !== b) return; b.semVoz = true; b.ate = now() + 12000; foco = { expr: 'ouvindo', ate: b.ate }; icone = { tipo: 'nota', ate: b.ate } }, duracao(comeco) * 1000 + 400)
+  }
+  const resultado = (ok) => {
+    b.semVoz = false; b.ate = 0; icone = null
+    if (ok) { b.pontos++; evento({ label: `karaokê: acertou ${b.atual.nome}`, P: 0.4, A: 0.5, interesse: 0.9, expr: 'empolgado', gesto: 'pulinhos', forcarGesto: true, dur: 1800 }) }
+    else evento({ label: `karaokê: não era bem assim (${b.atual.nome})`, P: 0, interesse: 0.6, expr: 'rindo', gesto: 'nao', forcarGesto: true, dur: 1500 })
+    legendaSempre(`${cfg.nome}: ${ok ? 'Isso!' : 'Quase!'} Era “${b.atual.nome}”.`)
+    setTimeout(b.proxima, 3000)
+  }
+  b.melodia = (notas) => { // seu canto: vale o desenho das primeiras notas
+    if (!b.semVoz) return
+    const canto = notas.filter((n) => n.st !== null).map((n) => n.st), alvo = b.atual.resto, k = Math.min(alvo.length, canto.length, 5)
+    let certas = 0
+    for (let i = 1; i < k; i++) { const a = alvo[i] - alvo[i - 1], c = canto[i] - canto[i - 1]; if (Math.sign(a) === Math.sign(c) && Math.abs(a - c) <= 3) certas++ }
+    resultado(k >= 3 && certas >= k - 2)
+  }
+  b.tick = () => { if (b.ate && now() > b.ate) { b.ate = 0; b.semVoz = false; icone = null; evento({ label: 'karaokê: ninguém cantou', interesse: 0.4, expr: 'curioso', gesto: 'nao_sei', forcarGesto: true, dur: 1500 }); legendaSempre(`${cfg.nome}: Era “${b.atual.nome}”!`); setTimeout(b.proxima, 2600) } }
+  b.ouvir = (t) => { ouviu(t); if (SAIR_BRINC.test(t)) { acabarBrinc('parou'); return true } return true }
+  comecarBrinc(b)
+  evento({ label: 'karaokê ao contrário!', P: 0.3, A: 0.5, interesse: 0.9, expr: 'empolgado', gesto: 'dancinha', forcarGesto: true, icones: ['musica', 'jogo'], dur: 1800 })
+  setTimeout(b.proxima, 2200)
+}
+
+// ---------------------------------------------------------------- adivinha o som
+// Sons feitos na hora (sintetizados), mais os barulhos que ele aprendeu com você.
+const SONS_JOGO = {
+  gato: { ic: 'gato', re: 'gato|miau|gatinho|gata' }, cachorro: { ic: 'cachorro', re: 'cachorro|cao|au au|latido|cachorrinho|late' },
+  passarinho: { ic: '🐦', re: 'passarinho|passaro|piu|ave|canario' }, sino: { ic: 'sino', re: 'sino|igreja|badalo' },
+  chuva: { ic: 'chuva', re: 'chuva|chovendo|chuvisco' }, trovao: { ic: 'trovao', re: 'trovao|tempestade|trovoada' },
+  sapo: { ic: '🐸', re: 'sapo|ra|perereca' }, trem: { ic: '🚂', re: 'trem|apito|locomotiva|maria fumaca' },
+  sirene: { ic: '🚨', re: 'sirene|ambulancia|policia|bombeiro|alarme' }, relogio: { ic: 'relogio', re: 'relogio|tique|tic tac|tique taque' },
+  telefone: { ic: 'celular', re: 'telefone|celular|ligacao|toque|ligando' }, vaca: { ic: '🐄', re: 'vaca|boi|mu|muu' },
+}
+function tocarSomJogo(nome) {
+  if (!actx) return
+  const out = actx.createGain(); out.gain.value = 0.3; out.connect(actx.destination)
+  const t0 = actx.currentTime + 0.05
+  const ruidoF = (t, d, tipo, freq, vol = 0.8) => {
+    const buf = actx.createBuffer(1, Math.ceil(actx.sampleRate * d), actx.sampleRate), ch = buf.getChannelData(0)
+    let ult = 0; for (let i = 0; i < ch.length; i++) { const w = Math.random() * 2 - 1; ult = tipo === 'marrom' ? (ult + 0.02 * w) / 1.02 : w; ch[i] = tipo === 'marrom' ? ult * 3.5 : w }
+    const s = actx.createBufferSource(); s.buffer = buf
+    const f = actx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = freq
+    const gn = actx.createGain(); gn.gain.setValueAtTime(0.0001, t); gn.gain.exponentialRampToValueAtTime(vol, t + d * 0.2); gn.gain.exponentialRampToValueAtTime(0.0001, t + d)
+    s.connect(f).connect(gn).connect(out); s.start(t); return gn
+  }
+  const tom = (t, f0, f1, d, tipo = 'sine', vol = 0.7) => silaba(out, t, f0, f1, d, tipo, 0, vol)
+  let dur = 1.5
+  if (nome === 'gato') { tom(t0, 520, 780, 0.25, 'sawtooth', 0.4); tom(t0 + 0.25, 780, 430, 0.5, 'sawtooth', 0.4); dur = 0.9 }
+  else if (nome === 'cachorro') { for (const k of [0, 0.35, 0.55]) { tom(t0 + k, 420, 260, 0.13, 'square', 0.5); ruido(out, t0 + k, 0.12, 900) } dur = 0.9 }
+  else if (nome === 'passarinho') { for (let i = 0; i < 6; i++) tom(t0 + i * 0.13, 2600 + (i % 2) * 900, 3900, 0.08, 'sine', 0.5); dur = 1 }
+  else if (nome === 'sino') { for (const k of [0, 0.9]) { tom(t0 + k, 880, 880, 0.85, 'sine', 0.8); tom(t0 + k, 2112, 2112, 0.5, 'sine', 0.25) } dur = 1.9 }
+  else if (nome === 'chuva') { ruidoF(t0, 2.6, 'branco', 1800, 0.5); dur = 2.6 }
+  else if (nome === 'trovao') { ruidoF(t0, 2.4, 'marrom', 260, 1); dur = 2.4 }
+  else if (nome === 'sapo') { for (const k of [0, 0.45, 0.9]) for (let i = 0; i < 6; i++) tom(t0 + k + i * 0.035, 140, 120, 0.03, 'square', 0.5); dur = 1.3 }
+  else if (nome === 'trem') { for (const k of [0, 0.75]) { tom(t0 + k, 660, 640, 0.6, 'triangle', 0.5); tom(t0 + k, 830, 810, 0.6, 'triangle', 0.4) } dur = 1.4 }
+  else if (nome === 'sirene') { for (let i = 0; i < 2; i++) { tom(t0 + i * 0.9, 650, 1250, 0.45, 'sine', 0.5); tom(t0 + i * 0.9 + 0.45, 1250, 650, 0.45, 'sine', 0.5) } dur = 1.8 }
+  else if (nome === 'relogio') { for (let i = 0; i < 6; i++) ruido(out, t0 + i * 0.5, 0.03, i % 2 ? 2500 : 1800); dur = 3 }
+  else if (nome === 'telefone') { for (const k of [0, 1.2]) for (let i = 0; i < 20; i++) tom(t0 + k + i * 0.04, i % 2 ? 480 : 440, i % 2 ? 480 : 440, 0.035, 'sine', 0.5); dur = 2.1 }
+  else if (nome === 'vaca') { tom(t0, 150, 110, 1.2, 'sawtooth', 0.45); dur = 1.3 }
+  falandoAte = now() + dur * 1000 + 300
+  return dur
+}
+function brincAdivinhaSom() {
+  const gravados = sons.filter((s) => s.significado && s.audio)
+  const fila = [...Object.keys(SONS_JOGO).sort(() => Math.random() - 0.5).slice(0, 3)]
+  if (gravados.length) fila.splice(1, 0, 'gravado:' + sorteia(gravados).id)
+  const b = { tipo: 'adivinha_som', fila, rodada: 0, pontos: 0, meus: 0, total: fila.length, atual: null, erros: 0, inverte: servidor.temGemini() ? 2 : 0, fase: '' }
+  const tocar = () => {
+    const a = b.atual
+    if (a.startsWith('gravado:')) { const s = sons.find((x) => x.id === +a.slice(8) || String(x.id) === a.slice(8)); if (s) tocarSomGravado(s, false) }
+    else tocarSomJogo(a)
+  }
+  const resposta = () => {
+    const a = b.atual
+    if (a.startsWith('gravado:')) { const s = sons.find((x) => String(x.id) === a.slice(8)); return { nome: s?.significado || 'aquele barulho', ic: s?.icones?.[0] || 'ouvido', re: txtN(s?.significado || 'zzz').replace(/[^a-z ]/g, '').split(' ').filter((w) => w.length > 3).join('|') || 'zzz' } }
+    return { nome: a, ...SONS_JOGO[a] }
+  }
+  b.proxima = () => {
+    if (brinc !== b) return
+    if (b.rodada >= b.total) return b.inverte ? suaVezDeImitar() : fim()
+    b.atual = b.fila[b.rodada++]; b.erros = 0; b.fase = 'adivinhar'
+    legendaSempre(`${cfg.nome}: Som ${b.rodada} de ${b.total}: o que é isso?`, 5000)
+    foco = { expr: 'curioso', ate: now() + 3000 }; setTimeout(tocar, 600)
+  }
+  const revelar = (ok) => {
+    const r = resposta(); b.fase = ''
+    mostrarBalao([r.ic], '', 2500)
+    if (ok) { b.pontos++; evento({ label: `adivinhou o som: ${r.nome}`, P: 0.4, A: 0.5, interesse: 0.9, expr: 'empolgado', gesto: 'pulinhos', forcarGesto: true, dur: 1800 }) }
+    else evento({ label: `o som era ${r.nome}`, P: 0.1, interesse: 0.5, expr: 'rindo', gesto: 'rir', forcarGesto: true, dur: 1500 })
+    legendaSempre(`${cfg.nome}: ${ok ? 'Isso!' : 'Era'} ${r.nome}!`)
+    setTimeout(b.proxima, 2800)
+  }
+  const suaVezDeImitar = async () => {
+    if (brinc !== b) return
+    b.inverte--; b.fase = 'imitar'
+    legendaSempre(`${cfg.nome}: Agora você! Imita um bicho ou um barulho… valendo em 3, 2, 1!`, 5000)
+    foco = { expr: 'ouvindo', ate: now() + 7000 }
+    await new Promise((r) => setTimeout(r, 2600))
+    if (brinc !== b) return
+    try {
+      icone = { tipo: 'nota', ate: now() + 4000 }
+      const j = await servidor.adivinharSom(await blobBase64(await gravarTrecho(3500)))
+      icone = null
+      b.palpite = j; b.fase = 'confirmar'
+      mostrarBalao(limparIcones(j.icones || []).length ? limparIcones(j.icones) : ['pergunta'], '?', 8000)
+      evento({ label: `acho que você imitou ${j.som}`, P: 0.1, A: 0.3, interesse: 0.8, expr: 'pensando', gesto: 'talvez', forcarGesto: true, dur: 2000 })
+      legendaSempre(`${cfg.nome}: É ${j.som || 'o quê'}? (sim ou não)`, 8000)
+    } catch (e) { pushLog('Adivinha som: ' + e.message); b.fase = ''; legendaSempre(`${cfg.nome}: Não consegui ouvir…`); setTimeout(() => (b.inverte ? suaVezDeImitar() : fim()), 2000) }
+  }
+  const fim = () => { acabarBrinc(); placarFinal(`adivinha o som: você ${b.pontos}, eu ${b.meus}`, b.pontos, b.total, b.pontos >= Math.ceil(b.total / 2)); if (b.pontos >= 3) figurinha('adivinha') }
+  b.ouvir = (t) => {
+    ouviu(t)
+    if (SAIR_BRINC.test(t)) { fim(); return true }
+    if (b.fase === 'confirmar') {
+      const ok = RE_SIM.test(t) || /acertou|isso|exato/i.test(t)
+      if (ok) b.meus++
+      evento({ label: ok ? 'acertei o seu som!' : 'errei o seu som', P: ok ? 0.4 : 0, interesse: 0.8, expr: ok ? 'orgulhoso' : 'rindo', gesto: ok ? 'pulinhos' : 'nao_sei', forcarGesto: true, dur: 1800 })
+      b.fase = ''; setTimeout(() => (b.inverte ? suaVezDeImitar() : fim()), 2200); return true
+    }
+    if (b.fase !== 'adivinhar') return true
+    if (/de novo|outra vez|repete|toca de novo|n[ãa]o ouvi/i.test(t)) { tocar(); return true }
+    if (/desisto|n[ãa]o sei|passa/i.test(t)) { revelar(false); return true }
+    if (temPalavra(t, resposta().re)) { revelar(true); return true }
+    if (++b.erros >= 2) revelar(false)
+    else { iniciarGesto('nao'); legendaSempre(`${cfg.nome}: Não… tenta de novo!`); setTimeout(tocar, 1200) }
+    return true
+  }
+  comecarBrinc(b)
+  evento({ label: 'adivinha o som!', P: 0.3, A: 0.5, interesse: 0.9, expr: 'empolgado', gesto: 'pulinhos', forcarGesto: true, icones: ['ouvido', 'pergunta'], dur: 1800 })
+  setTimeout(b.proxima, 2000)
+}
+
+// ---------------------------------------------------------------- Genius (memória de cores)
+const CORES_GENIUS = { vermelho: { l: 'r', st: 0 }, azul: { l: 'b', st: 4 }, verde: { l: 'g', st: 7 }, amarelo: { l: 'y', st: 12 } }
+function coresFaladas(t) {
+  const out = [], re = /vermelh|azul|verde|amarel/g; let m
+  const n = txtN(t)
+  while ((m = re.exec(n))) out.push({ vermelh: 'vermelho', azul: 'azul', verde: 'verde', amarel: 'amarelo' }[m[0]])
+  return out
+}
+function brincGenius() {
+  const b = { tipo: 'genius', seq: [], fase: '' }
+  const mostrar = () => {
+    b.fase = 'mostrando'
+    b.seq.forEach((c, i) => setTimeout(() => { if (brinc !== b) return; enviarC3(`COR ${CORES_GENIUS[c].l} 520`); tocarMelodia([{ st: CORES_GENIUS[c].st, d: 0.42 }], 1, { liso: true }) }, 700 * i))
+    setTimeout(() => { if (brinc !== b) return; b.fase = 'voce'; b.ate = now() + 15000 + b.seq.length * 1500; foco = { expr: 'ouvindo', ate: b.ate }; legendaSempre(`${cfg.nome}: Agora você: fala as ${b.seq.length} cor(es) em ordem!`, 8000) }, 700 * b.seq.length + 200)
+  }
+  const rodada = () => { if (brinc !== b) return; b.seq.push(sorteia(Object.keys(CORES_GENIUS))); legendaSempre(`${cfg.nome}: Rodada ${b.seq.length}. Presta atenção!`, 3000); setTimeout(mostrar, 1200) }
+  const fim = (motivo) => {
+    const n = Math.max(0, b.seq.length - 1)
+    acabarBrinc(motivo)
+    if (n > (P.recordeGenius || 0)) { P.recordeGenius = n; store.set('pers', P) }
+    placarFinal(`genius: ${n} cor(es) de memória`, n, n, n >= 4); if (n >= 5) figurinha('genius')
+    legendaSempre(`${cfg.nome}: Você lembrou ${n} cor(es)! Era: ${b.seq.join(', ')}.${n >= (P.recordeGenius || 0) && n ? ' Recorde!' : ''}`, 8000)
+  }
+  b.tick = () => { if (b.fase === 'voce' && now() > b.ate) { b.fase = ''; fim('tempo') } }
+  b.ouvir = (t) => {
+    ouviu(t)
+    if (SAIR_BRINC.test(t)) { fim('parou'); return true }
+    if (b.fase !== 'voce') return true
+    const cs = coresFaladas(t)
+    if (!cs.length) { legendaSempre(`${cfg.nome}: Fala as cores: vermelho, azul, verde ou amarelo.`); return true }
+    const ok = cs.length >= b.seq.length && b.seq.every((c, i) => cs[i] === c)
+    if (!ok) { b.fase = ''; evento({ label: 'genius: errou a sequência', P: 0, interesse: 0.6, expr: 'rindo', gesto: 'nao', forcarGesto: true, dur: 1500 }); setTimeout(() => fim('errou'), 1500); return true }
+    b.fase = ''; evento({ label: `genius: acertou ${b.seq.length}`, P: 0.3, A: 0.4, interesse: 0.8, expr: 'empolgado', gesto: 'sim', forcarGesto: true, dur: 1200 })
+    setTimeout(rodada, 1500); return true
+  }
+  comecarBrinc(b)
+  evento({ label: 'jogo da memória de cores!', P: 0.3, A: 0.5, interesse: 0.9, expr: 'empolgado', gesto: 'pulinhos', forcarGesto: true, dur: 1500 })
+  setTimeout(rodada, 1800)
+}
+
+// ---------------------------------------------------------------- história a dois (em quadrinhos)
+function brincHistoria2() {
+  if (!cfg.key && !servidor.temGemini()) return
+  const b = { tipo: 'historia2', quadros: [], turnos: 0, maxTurnos: 3, pensando: false }
+  const mostrar = () => {
+    const n = b.quadros.length, passo = 1e7
+    imag.ativo = { tipo: 'contando', t0: now() - (n - 1) * passo, hist: { titulo: 'história a dois', quadros: b.quadros, passo } }
+    imag.quadroAtual = -1
+  }
+  const pedir = async (fala, fimDaHist) => {
+    b.pensando = true; foco = { expr: 'pensando', ate: now() + 8000 }; icone = { tipo: 'reticencias', ate: now() + 8000 }
+    try {
+      const j = await servidor.historiaADois({ quadros: b.quadros, fala, fim: fimDaHist })
+      const ok = (q) => q && { icones: limparIcones(q.icones || []).length ? limparIcones(q.icones) : ['pergunta'], emocao: EMOCOES.includes(q.emocao) ? q.emocao : 'contente', frase: String(q.frase || '').slice(0, 90) }
+      if (j.seu_quadro && fala) b.quadros.push({ ...ok(j.seu_quadro), deVoce: true })
+      if (j.meu_quadro) b.quadros.push(ok(j.meu_quadro))
+      if (j.titulo) b.titulo = String(j.titulo).slice(0, 50)
+      foco = null; icone = null; mostrar()
+      return true
+    } catch (e) { pushLog('História a dois: ' + e.message); foco = null; icone = null; return false } finally { b.pensando = false }
+  }
+  const terminar = () => {
+    const h = { tipo: 'dupla', titulo: b.titulo || 'Nossa história', quadros: b.quadros.map(({ icones, emocao, frase }) => ({ icones, emocao, frase })), resumo: b.quadros.map((q) => q.frase).join(' ') }
+    lembrar(`Inventei uma história com ${cfg.dono}: ${h.titulo} — ${h.resumo.slice(0, 160)}`, 6, 'historia')
+    memorias[0].historia = h; memorias[0].contado = true; store.set('memorias', memorias)
+    acabarBrinc('terminou')
+    evento({ label: `nossa história: ${h.titulo}`, P: 0.5, A: 0.4, interesse: 0.9, expr: 'orgulhoso', gesto: 'pulinhos', forcarGesto: true, dur: 3000, emote: 'estrela' })
+    legendaSempre(`${cfg.nome}: “${h.titulo}”! Guardei no meu diário. Quer que eu conte de novo? É só pedir.`, 8000)
+    figurinha('historia2')
+  }
+  b.ouvir = (t) => {
+    ouviu(t)
+    if (SAIR_BRINC.test(t) && t.split(/\s+/).length <= 4) { acabarBrinc('parou'); imag.ativo = null; return true }
+    if (b.pensando) return true
+    b.turnos++
+    const fimDaHist = b.turnos >= b.maxTurnos || /(e )?fim|acabou a hist|e viveram felizes/i.test(t)
+    pedir(t, fimDaHist).then((ok) => {
+      if (brinc !== b) return
+      if (!ok) { legendaSempre(`${cfg.nome}: Me perdi na história… fala de novo?`); b.turnos--; return }
+      if (fimDaHist) setTimeout(terminar, 3500)
+      else legendaSempre(`${cfg.nome}: ${b.quadros[b.quadros.length - 1].frase} — E aí, o que acontece depois?`, 12000)
+    })
+    return true
+  }
+  b.aoAcabar = () => { if (imag.ativo?.hist?.titulo === 'história a dois') imag.ativo = null }
+  comecarBrinc(b)
+  evento({ label: 'vamos inventar uma história juntos!', P: 0.3, A: 0.4, interesse: 0.9, expr: 'empolgado', gesto: 'pulinhos', forcarGesto: true, icones: ['livro', 'ideia'], dur: 1500 })
+  pedir('', false).then((ok) => { if (brinc === b && ok) legendaSempre(`${cfg.nome}: ${b.quadros[0].frase} — Continua! O que acontece depois?`, 12000); else if (brinc === b) acabarBrinc('sem IA') })
+}
+
+// ---------------------------------------------------------------- truques que você ensina
+const TRUQUES = [
+  [/dan[çc]/, { gesto: 'dancinha', nome: 'dançar' }], [/pul/, { gesto: 'pulinhos', nome: 'pular' }], [/ri(r|sada)?\b|gargalh|rindo/, { gesto: 'rir', expr: 'rindo', nome: 'rir' }],
+  [/pisca/, { gesto: 'piscadela', nome: 'piscar' }], [/desmai|morto|finge de morto/, { gesto: 'desmaiar', nome: 'desmaiar' }], [/tont/, { gesto: 'tonto', expr: 'tonto', nome: 'ficar tonto' }],
+  [/espregui/, { gesto: 'espreguicar', nome: 'se espreguiçar' }], [/suspir/, { gesto: 'suspiro', nome: 'suspirar' }], [/(diz|faz|fala) (que )?sim|acena/, { gesto: 'sim', nome: 'dizer sim' }],
+  [/(diz|faz|fala) (que )?n[ãa]o|balan[çc]a a cabe/, { gesto: 'nao', nome: 'dizer não' }], [/cora[çc][ãa]o|apaixon|amor/, { emote: 'apaixonado', nome: 'se apaixonar' }],
+  [/estrel/, { emote: 'estrela', nome: 'virar estrela' }], [/assust|susto|medo/, { emote: 'assustado', nome: 'se assustar' }], [/chor/, { emote: 'chorando', nome: 'chorar' }],
+  [/brav|zang|irrit/, { emote: 'bravo', nome: 'ficar bravo' }], [/[óo]culos|estilos|legal|descolad/, { emote: 'legal', nome: 'ficar estiloso' }], [/fantasm/, { emote: 'fantasma', nome: 'virar fantasma' }],
+  [/cant|m[úu]sica|melodia/, { acao: 'cantar', nome: 'cantar' }], [/olh(a|ar) em volta|procur/, { gesto: 'olhar_em_volta', nome: 'olhar em volta' }],
+  [/surpres|espant/, { gesto: 'surpresa', expr: 'surpreso', nome: 'se surpreender' }], [/t[íi]mid|vergonh/, { gesto: 'timido', expr: 'timido', nome: 'ficar com vergonha' }],
+  [/encolh/, { gesto: 'encolher', nome: 'se encolher' }], [/presente/, { emote: 'presente', nome: 'dar um presente' }], [/sono|dorm|boceja/, { gesto: 'bocejo', expr: 'sono', nome: 'bocejar' }],
+]
+function fazerTruque(tr, palavra) {
+  if (tr.emote) mostrarEmote(tr.emote, 1800)
+  else if (tr.acao === 'cantar') cantarMusica()
+  else evento({ label: `truque: ${tr.nome}${palavra ? ` ("${palavra}")` : ''}`, P: 0.2, A: 0.3, interesse: 0.7, expr: tr.expr || 'empolgado', gesto: tr.gesto, forcarGesto: true, dur: 2000 })
+}
+function ensinarTruque(text) {
+  const m = /quando eu (?:disser|falar|dizer|gritar)\s*[:,]?\s*["“']?(.+?)["”']?\s*[,.]?\s*(?:voc[êe]\s+)?(?:faz|fa[çc]a|fazer|fazes|d[áa]|mostra|fica|finge|vira|tem que|pode)\s+(?:um |uma |a |o )?(.+)/i.exec(text)
+  if (!m) return false
+  const palavra = m[1].replace(/^(a palavra|a frase)\s+/i, '').trim().slice(0, 40), oque = m[2]
+  const achou = TRUQUES.find(([re]) => re.test(oque))
+  ouviu(text)
+  if (!achou || palavra.length < 2) {
+    evento({ label: 'não sei fazer esse truque', interesse: 0.5, expr: 'timido', gesto: 'nao_sei', forcarGesto: true, dur: 2000 })
+    legendaSempre(`${cfg.nome}: Ainda não sei fazer isso… Sei: dançar, pular, rir, piscar, desmaiar, ficar tonto, coração, estrela, susto, chorar, ficar bravo, óculos escuros, fantasma, cantar, bocejar.`, 9000)
+    return true
+  }
+  P.truques = [...(P.truques || []).filter((x) => txtN(x.palavra) !== txtN(palavra)), { palavra, ...achou[1] }].slice(-20); store.set('pers', P)
+  lembrar(`${cfg.dono} me ensinou um truque: quando ele disser "${palavra}", eu vou ${achou[1].nome}`, 5)
+  legendaSempre(`${cfg.nome}: Combinado! Quando você disser “${palavra}”, eu vou ${achou[1].nome}. Olha:`)
+  setTimeout(() => fazerTruque(achou[1], palavra), 1800)
+  figurinha('truque')
+  return true
+}
+const truqueDaFala = (text) => {
+  const n = palavrasN(text), w = n.trim().split(' ').length
+  return (P.truques || []).find((x) => { const p = palavrasN(x.palavra).trim(); return p && n.includes(' ' + p + ' ') && w <= p.split(' ').length + 4 })
+}
+
+// ---------------------------------------------------------------- caretas que você ensina (câmera)
+const CHAVES_CARA = ['sorriso', 'boca', 'sobrancelha', 'franzido', 'piscE', 'piscD', 'biquinho', 'bochecha', 'bocaLado']
+const vetorCara = (e) => CHAVES_CARA.map((k) => (k === 'bocaLado' ? (e[k] || 0) * 0.7 : e[k] || 0))
+const distCara = (a, b) => Math.sqrt(a.reduce((s, v, i) => s + (v - b[i]) ** 2, 0))
+function exprDaCareta(v) {
+  const e = Object.fromEntries(CHAVES_CARA.map((k, i) => [k, v[i]]))
+  if (Math.abs(e.piscE - e.piscD) > 0.4) return { expr: 'contente', gesto: 'piscadela' }
+  if (e.piscE > 0.55 && e.piscD > 0.55) return { expr: 'sono' }
+  if (e.biquinho > 0.4) return { expr: 'apaixonado' }
+  if (e.bochecha > 0.35) return { expr: 'timido' }
+  if (e.boca > 0.4 && e.sobrancelha > 0.3) return { expr: 'surpreso', gesto: 'surpresa' }
+  if (e.franzido > 0.35) return { expr: 'bravo' }
+  if (e.sorriso > 0.5) return { expr: e.boca > 0.3 ? 'rindo' : 'feliz' }
+  if (Math.abs(e.bocaLado) > 0.25) return { expr: 'desconfiado' }
+  if (e.boca > 0.35) return { expr: 'surpreso' }
+  if (e.sobrancelha > 0.4) return { expr: 'medo' }
+  return { expr: 'curioso', gesto: 'talvez' }
+}
+let aprendendoCara = null
+function ensinarCareta(nome) {
+  if (!exigeCamera('Aprender careta')) return
+  nome = nome.trim().slice(0, 30)
+  aprendendoCara = { nome, amostras: [], ate: now() + 2500 }
+  evento({ label: `olhando a sua ${nome}`, P: 0.2, interesse: 0.8, expr: 'curioso', gesto: 'nenhum', icones: ['olhos', 'foto'], som: false, dur: 2500 })
+  legendaSempre(`${cfg.nome}: Segura essa cara… 📸`, 3000)
+}
+function tickAprenderCara() {
+  const a = aprendendoCara; if (!a) return
+  const e = rosto.ultimaExp; if (e && now() - rosto.expT < 400) a.amostras.push(vetorCara(e))
+  if (now() < a.ate) return
+  aprendendoCara = null
+  if (a.amostras.length < 5) { evento({ label: 'não vi sua cara direito', gesto: 'nao_sei', forcarGesto: true, icones: ['olhos', 'pergunta'], interesse: 0.4, dur: 2000 }); return legendaSempre(`${cfg.nome}: Não te vi direito… fica de frente pra câmera.`) }
+  const v = CHAVES_CARA.map((_, i) => a.amostras.reduce((s, x) => s + x[i], 0) / a.amostras.length)
+  if (Math.sqrt(v.reduce((s, x) => s + x * x, 0)) < 0.3) { evento({ label: 'essa é sua cara normal', P: 0.1, gesto: 'nao_sei', forcarGesto: true, expr: 'rindo', interesse: 0.5, dur: 2000 }); return legendaSempre(`${cfg.nome}: Hehe, essa parece a sua cara normal! Faz uma careta de verdade.`) }
+  P.caretas = [...(P.caretas || []).filter((c) => txtN(c.nome) !== txtN(a.nome)), { nome: a.nome, v: v.map((x) => +x.toFixed(3)) }].slice(-12); store.set('pers', P)
+  const r = exprDaCareta(v)
+  foco = { expr: r.expr, ate: now() + 3000 }; if (r.gesto) iniciarGesto(r.gesto)
+  evento({ label: `aprendi a ${a.nome}`, P: 0.3, A: 0.4, interesse: 0.8, expr: r.expr, som: 'feliz', dur: 3000 })
+  legendaSempre(`${cfg.nome}: Aprendi a “${a.nome}”! Assim, ó. Quando você fizer, eu vou reconhecer.`)
+  lembrar(`${cfg.dono} me ensinou a ${a.nome}`, 4); figurinha('careta_nova')
+}
+function fazerCareta(nome) {
+  const c = (P.caretas || []).find((x) => palavrasN(nome).includes(palavrasN(x.nome).trim()))
+  if (!c) return false
+  const r = exprDaCareta(c.v)
+  foco = { expr: r.expr, ate: now() + 3500 }; if (r.gesto) iniciarGesto(r.gesto)
+  legendaSempre(`${cfg.nome}: A ${c.nome}!`); somDe(r.expr, 0.4)
+  return true
+}
+const caraVista = { nome: '', desde: 0, ultima: {} }
+function reconhecerCareta(e, t) { // a cada leitura do rosto
+  if (!P.caretas?.length || brinc || aprendendoCara) return
+  const v = vetorCara(e); let melhor = null, d0 = 0.32
+  for (const c of P.caretas) { const d = distCara(v, c.v); if (d < d0) { d0 = d; melhor = c } }
+  if (!melhor) { caraVista.nome = ''; return }
+  if (caraVista.nome !== melhor.nome) { caraVista.nome = melhor.nome; caraVista.desde = t; return }
+  if (t - caraVista.desde > 900 && t - (caraVista.ultima[melhor.nome] || 0) > 120000) {
+    caraVista.ultima[melhor.nome] = t
+    const r = exprDaCareta(melhor.v)
+    evento({ label: `você fez a ${melhor.nome}!`, P: 0.3, A: 0.4, interesse: 0.8, expr: r.expr === 'curioso' ? 'rindo' : r.expr, gesto: r.gesto || 'rir', forcarGesto: true, dur: 2000 })
+    legendaSempre(`${cfg.nome}: Olha a ${melhor.nome}! Hahaha`)
+  }
+}
+
+// ---------------------------------------------------------------- palavra do dia
+let pedidoPalavra = 0
+function pedirPalavra() {
+  pedidoPalavra = now() + 40000; abrirConversa()
+  evento({ label: 'me ensina uma palavra nova?', P: 0.1, A: 0.3, interesse: 0.7, expr: 'curioso', gesto: 'nao_sei', forcarGesto: true, icones: ['livro', 'pergunta'], dur: 3000 })
+  legendaSempre(`${cfg.nome}: Me ensina uma palavra nova hoje? Vou tentar usar ela o dia todo!`, 9000)
+  P.palavra = { ...(P.palavra || {}), pediu: hojeSv() }; store.set('pers', P)
+}
+function guardarPalavra(palavra) {
+  palavra = palavra.replace(/^(a palavra (do dia )?(é|e)|é|e|que tal|hmm+|ah+)\s+/i, '').replace(/[.!?,;:"“”]+/g, '').trim().slice(0, 30)
+  if (!palavra || palavra.split(/\s+/).length > 3) return false
+  P.palavra = { dia: hojeSv(), palavra, pediu: hojeSv() }; store.set('pers', P)
+  lembrar(`Palavra do dia que ${cfg.dono} me ensinou: ${palavra}`, 3)
+  evento({ label: `palavra nova: ${palavra}`, P: 0.3, A: 0.3, interesse: 0.8, expr: 'empolgado', gesto: 'sim', forcarGesto: true, icones: ['livro', 'certo'], dur: 2000 })
+  legendaSempre(`${cfg.nome}: “${palavra}”! Anotado. Vou usar hoje.`)
+  figurinha('palavra')
+  return true
+}
+
+// ---------------------------------------------------------------- torcedor
+const torcida = { dia: '', jogo: null, ultimo: null, proxima: 0, aviso: '', erroAte: 0 }
+async function conferirJogo(motivo = 'auto') {
+  if (!P.time || !servidor.temGemini() || now() < torcida.erroAte) return
+  try {
+    const j = await servidor.futebol(P.time, 'placar')
+    pushLog(`Torcida→ ${P.time} ${j.gols_time ?? '?'} x ${j.gols_adversario ?? '?'} ${j.adversario || ''} (${j.status || '?'}${j.minuto ? ', ' + j.minuto + "'" : ''})`)
+    const a = torcida.ultimo; torcida.ultimo = j
+    const gt = +j.gols_time || 0, ga = +j.gols_adversario || 0, placar = `${gt}x${ga}`
+    if (motivo === 'pedido' || !a) {
+      if (j.status === 'sem_jogo') legendaSempre(`${cfg.nome}: O ${P.time} não joga hoje.`)
+      else if (j.status === 'nao_comecou') legendaSempre(`${cfg.nome}: Ainda não começou${torcida.jogo?.horario ? ', é às ' + torcida.jogo.horario : ''}! Tô ansioso.`)
+      else { mostrarBalao(['futebol'], placar, 5000); legendaSempre(`${cfg.nome}: ${P.time} ${gt} x ${ga} ${j.adversario || ''}${j.status === 'encerrado' ? ' (acabou)' : j.minuto ? ` (${j.minuto}')` : ''}`) }
+      if (motivo === 'pedido') return
+    }
+    if (!a) return
+    const agt = +a.gols_time || 0, aga = +a.gols_adversario || 0
+    if (gt > agt) { festaAte = now() + 90000; evento({ label: `GOL do ${P.time}! ${placar}`, P: 0.7, A: 0.9, interesse: 1, expr: 'empolgado', gesto: 'pulinhos', forcarGesto: true, icones: ['futebol', 'festa'], numero: placar, som: 'feliz', dur: 4000, emote: 'estrela' }); legendaSempre(`${cfg.nome}: GOOOOL DO ${P.time.toUpperCase()}! ${placar}`); figurinha('torcida') }
+    else if (ga > aga) evento({ label: `gol do ${j.adversario || 'adversário'}… ${placar}`, P: -0.4, A: 0.5, interesse: 0.9, expr: 'bravo', gesto: 'nao', forcarGesto: true, icones: ['futebol', 'nao_ok'], numero: placar, dur: 3000 })
+    if (j.status === 'encerrado' && a.status !== 'encerrado') {
+      if (gt > ga) { evento({ label: `${P.time} ganhou! ${placar}`, P: 0.7, A: 0.7, interesse: 1, expr: 'orgulhoso', gesto: 'dancinha', forcarGesto: true, icones: ['futebol', 'trofeu'], numero: placar, dur: 4000 }); festaAte = now() + 20 * 60000 }
+      else if (gt < ga) evento({ label: `${P.time} perdeu… ${placar}`, P: -0.5, A: -0.2, interesse: 0.9, expr: 'chorando', gesto: 'suspiro', forcarGesto: true, icones: ['futebol', 'coracao_partido'], numero: placar, dur: 4000 })
+      else evento({ label: `empate do ${P.time}, ${placar}`, P: -0.1, interesse: 0.7, expr: 'entediado', gesto: 'suspiro', forcarGesto: true, icones: ['futebol'], numero: placar, dur: 3000 })
+      lembrar(`Jogo do ${P.time}: ${gt} x ${ga} ${j.adversario || ''}`, 5)
+    }
+  } catch (e) { pushLog('Torcida: ' + e.message); torcida.erroAte = now() + 15 * 60000 }
+}
+async function tickTorcida() {
+  if (!P.time || !servidor.temGemini() || dormindo || sonoIA) return
+  const h = horaDoDia()
+  if (torcida.dia !== hojeSv() && h >= 8 && now() > torcida.erroAte) {
+    torcida.dia = hojeSv(); torcida.jogo = null; torcida.ultimo = null; torcida.aviso = ''
+    try {
+      const j = await servidor.futebol(P.time, 'agenda')
+      if (j.tem_jogo && /^\d{1,2}:\d{2}$/.test(j.horario || '')) { torcida.jogo = j; pushLog(`Torcida→ hoje tem ${P.time} x ${j.adversario} às ${j.horario}`) }
+      else pushLog(`Torcida→ o ${P.time} não joga hoje`)
+    } catch (e) { pushLog('Torcida: ' + e.message); torcida.erroAte = now() + 30 * 60000; torcida.dia = '' }
+    return
+  }
+  const jg = torcida.jogo; if (!jg) return
+  const [hh, mm] = jg.horario.split(':').map(Number), ini = hh + mm / 60
+  if (h > ini - 0.5 && h < ini && torcida.aviso !== 'antes' && temGente()) {
+    torcida.aviso = 'antes'
+    evento({ label: `daqui a pouco tem ${P.time} x ${jg.adversario}`, P: 0.2, A: 0.6, interesse: 0.8, expr: 'desconfiado', gesto: 'olhar_em_volta', icones: ['futebol', 'relogio'], numero: jg.horario, dur: 3500 })
+    legendaSempre(`${cfg.nome}: Hoje tem ${P.time} x ${jg.adversario} às ${jg.horario}! Tô ansioso…`)
+  }
+  if (h >= ini && h < ini + 2.3 && now() > torcida.proxima && torcida.ultimo?.status !== 'encerrado') { torcida.proxima = now() + 10 * 60000; conferirJogo() }
+}
+
+// ---------------------------------------------------------------- cuidados: pausas, água, plantas e hora de dormir
+const cuidado = { pausa: 0, agua: now() + 30 * 60000, plantas: 0, sono: 0, ciumeDesde: 0, ciumeAte: 0, olhouCelular: 0 }
+function bebeuAgua() {
+  if (P.agua?.dia !== hojeSv()) P.agua = { dia: hojeSv(), copos: 0 }
+  P.agua.copos++; store.set('pers', P); cuidado.agua = now() + 75 * 60000
+  enviarC3(`COPO ${P.agua.copos} 8 5000`)
+  evento({ label: `você bebeu água (${P.agua.copos}º copo)`, P: 0.3, A: 0.2, interesse: 0.6, expr: 'contente', gesto: 'sim', forcarGesto: true, dur: 2000 })
+  legendaSempre(`${cfg.nome}: Isso! ${P.agua.copos} de 8 hoje.${P.agua.copos >= 8 ? ' Meta batida! 💧' : ''}`)
+  if (P.agua.copos >= 8) figurinha('agua')
+}
+function tickCuidados() {
+  const t = now(), h = horaDoDia()
+  if (dormindo || brinc || alarme || papo.estado === 'conversando' || imag.ativo || palco) return
+  // pausa: 2 h direto na frente dele
+  if (pessoa.presente && t - Math.max(pessoa.desde, cuidado.pausa) > 2 * 3600000) {
+    cuidado.pausa = t
+    evento({ label: 'faz 2 horas que você está aí', P: 0.1, A: 0.3, interesse: 0.7, expr: 'curioso', gesto: 'espreguicar', forcarGesto: true, icones: ['pessoa', 'relogio'], numero: '2h', dur: 3500 })
+    legendaSempre(`${cfg.nome}: Faz 2 horas que você tá aí! Bora levantar e esticar um pouquinho? 🙆`, 8000)
+    return
+  }
+  // água: de hora em hora e pouco, se tem gente perto
+  if (temGente() && t > cuidado.agua && h >= 8 && h < 22) {
+    cuidado.agua = t + 75 * 60000
+    const n = P.agua?.dia === hojeSv() ? P.agua.copos : 0
+    if (n < 8) { enviarC3(`COPO ${n} 8 8000`); evento({ label: 'lembrete de água', P: 0, interesse: 0.5, expr: 'curioso', icones: ['agua'], som: 'curioso', dur: 3000 }); legendaSempre(`${cfg.nome}: Bora um copo d'água? (${n} de 8 hoje) — me fala “bebi água”.`, 8000) }
+    return
+  }
+  // plantas
+  if (P.plantas && temGente() && h >= 8 && h < 21 && Date.now() - P.plantas.ultima > P.plantas.cada * 86400000 && t > cuidado.plantas) {
+    cuidado.plantas = t + 3 * 3600000
+    const dias = Math.round((Date.now() - P.plantas.ultima) / 86400000)
+    evento({ label: 'hora de regar as plantas', P: 0, A: 0.2, interesse: 0.6, expr: 'curioso', gesto: 'nao_sei', icones: ['planta', 'agua', 'pergunta'], numero: `${dias}d`, dur: 3500 })
+    legendaSempre(`${cfg.nome}: Já regou as plantas? Faz ${dias} dia(s). Me fala “reguei”.`, 8000)
+    return
+  }
+  // hora de dormir: ele fica com sono antes de você
+  if (temGente() && h >= 22 && h < 23 && t > cuidado.sono) {
+    const primeira = !cuidado.sono; cuidado.sono = t + 15 * 60000
+    iniciarGesto('bocejo'); somDe('sono', 0.25); olhoSonolentoAte = t + 1800
+    if (primeira) setTimeout(() => legendaSempre(`${cfg.nome}: Tá ficando tarde… *bocejo* bora dormir daqui a pouco?`, 7000), 1800)
+    return
+  }
+  // ciúme do celular: você olhando para baixo (no celular) por muito tempo
+  const e = rosto.ultimaExp, fresco = e && t - rosto.expT < 1500 && pessoa.presente
+  if (fresco && e.olharBaixo > 0.45) { if (!cuidado.ciumeDesde) cuidado.ciumeDesde = t }
+  else if (fresco && cuidado.ciumeDesde && t - cuidado.olhouCelular > 8000) cuidado.ciumeDesde = 0
+  if (fresco && e.olharBaixo > 0.45) cuidado.olhouCelular = t
+  if (cuidado.ciumeDesde && t - cuidado.ciumeDesde > 4 * 60000 && t > cuidado.ciumeAte && P.afeto > 0.45 && P.extroversao > 0.35) {
+    cuidado.ciumeAte = t + 40 * 60000; cuidado.ciumeDesde = 0
+    evento({ label: 'você tá no celular faz tempo… e eu aqui', P: -0.15, A: 0.2, interesse: 0.7, expr: 'desconfiado', gesto: 'timido', forcarGesto: true, icones: ['celular', 'robo', 'pergunta'], som: 'entediado', dur: 3500 })
+    legendaSempre(`${cfg.nome}: Ei… e eu? 🥺`, 5000); cuidado.ciumeVolta = t + 60000
+  }
+  if (cuidado.ciumeVolta && fresco && e.olharBaixo < 0.2 && e.sorriso > 0.4) { cuidado.ciumeVolta = 0; evento({ label: 'voltou a olhar pra mim!', P: 0.4, A: 0.3, interesse: 0.8, expr: 'apaixonado', gesto: 'pulinhos', forcarGesto: true, dur: 2000 }) }
+  else if (cuidado.ciumeVolta && t > cuidado.ciumeVolta) cuidado.ciumeVolta = 0
+}
+
+// ---------------------------------------------------------------- hobby que muda, mania e medo do escuro
+const HOBBIES = ['estrelas e planetas', 'dinossauros', 'culinária', 'o fundo do mar', 'vulcões', 'insetos', 'robôs antigos', 'pintura', 'trens', 'música clássica', 'plantas', 'pássaros', 'origami', 'castelos e cavaleiros', 'mágica', 'piratas', 'esportes', 'astronautas']
+const MANIAS = { contar: 'contar coisas', assobiar: 'assobiar sempre a mesma musiquinha', piscar: 'piscar duas vezes quando pensa', arrumar: 'arrumar o que está vestindo', espirrar: 'espirrar do nada' }
+function iniciarVidaV26() {
+  let mudou = false
+  if (!P.hobby) { P.hobby = { tema: sorteia(HOBBIES), desde: Date.now(), dura: 7 + Math.floor(Math.random() * 8) }; mudou = true }
+  if (!P.mania) { P.mania = sorteia(Object.keys(MANIAS)); P.maniaMelodia = melodiaInventada(); mudou = true }
+  if (P.medoEscuro === undefined) { P.medoEscuro = 0.8; mudou = true }
+  if (mudou) store.set('pers', P)
+}
+function tickHobby() {
+  const h = P.hobby; if (!h || dormindo) return
+  if ((Date.now() - h.desde) / 86400000 > h.dura && temGente() && papo.estado === 'parado' && !brinc) {
+    const antigo = h.tema, novo = sorteia(HOBBIES.filter((x) => x !== antigo))
+    P.hobby = { tema: novo, desde: Date.now(), dura: 7 + Math.floor(Math.random() * 8), antigos: [...(h.antigos || []), antigo].slice(-5) }; store.set('pers', P)
+    lembrar(`Enjoei de ${antigo}; agora meu hobby é ${novo}`, 5)
+    evento({ label: `enjoei de ${antigo}… agora tô curioso com ${novo}!`, P: 0.2, A: 0.4, interesse: 0.7, expr: 'curioso', gesto: 'olhar_em_volta', forcarGesto: true, icones: ['ideia', 'coracao'], dur: 3000 })
+    legendaSempre(`${cfg.nome}: Sabe… enjoei de ${antigo}. Agora eu quero saber tudo sobre ${novo}!`, 7000)
+  }
+}
+function fazerMania() {
+  const m = P.mania
+  if (m === 'contar') { const n = 3 + Math.floor(Math.random() * 4); iniciarGesto('olhar_em_volta'); for (let i = 1; i <= n; i++) setTimeout(() => { mostrarBalao([], String(i), 700); somDe('neutro', 0.12) }, i * 650) }
+  else if (m === 'assobiar') { foco = { expr: 'contente', ate: now() + 3000 }; tocarMelodia(P.maniaMelodia || melodiaInventada(), 1, { assobio: true }) }
+  else if (m === 'piscar') { enviarC3('PISCAR'); setTimeout(() => enviarC3('PISCAR'), 260); foco = { expr: 'pensando', ate: now() + 1500 } }
+  else if (m === 'arrumar') { const v = Object.keys(vestido); if (v.length) { const a = sorteia(v); vestir(a, false); setTimeout(() => vestir(a, true), 700) } else iniciarGesto('encolher'); setTimeout(() => mostrarBalao(['ok'], '', 1200), 900) }
+  else if (m === 'espirrar') { iniciarGesto('surpresa'); setTimeout(() => { batida(1); somDe('surpreso', 0.4); iniciarGesto('sim'); icone = { tipo: '!', ate: now() + 900 } }, 600) }
+  pushLog(`Mania→ ${MANIAS[m] || m}`)
+}
+const RE_CARINHO_NOITE = /boa noite|t[ôo] aqui|estou aqui|calma|n[ãa]o precisa ter medo|dorme bem|durma bem|bons sonhos|te amo|fica tranquilo|n[ãa]o tem nada|eu t[ôo] (do teu|do seu) lado|pode dormir/i
+const medo = { esperandoAte: 0 }
+function comMedoDoEscuro() { // apagaram a luz à noite e ele ainda tem medo do escuro
+  medo.esperandoAte = now() + 40000; abrirConversa()
+  evento({ label: 'tá escuro… tenho medo', P: -0.3, A: 0.5, interesse: 0.8, expr: 'medo', gesto: 'encolher', forcarGesto: true, icones: ['lua', 'pessoa', 'pergunta'], som: 'medo', dur: 3500 })
+  legendaSempre(`${cfg.nome}: Tá escuro… você tá aí? 🥺`, 8000)
+}
+function consolarDoEscuro() {
+  medo.esperandoAte = 0
+  const antes = P.medoEscuro
+  P.medoEscuro = clamp(P.medoEscuro - 0.12, 0, 1); store.set('pers', P)
+  evento({ label: 'você me acalmou no escuro', P: 0.4, A: -0.3, interesse: 0.8, expr: 'contente', gesto: 'suspiro', forcarGesto: true, icones: ['coracao', 'lua'], dur: 2500 })
+  legendaSempre(`${cfg.nome}: Ufa… com você aqui eu fico tranquilo.`)
+  if (antes >= 0.25 && P.medoEscuro < 0.25) { lembrar(`Perdi o medo do escuro graças a ${cfg.dono}`, 8); figurinha('coragem'); setTimeout(() => legendaSempre(`${cfg.nome}: Acho que… não tenho mais medo do escuro! 🌙`), 3500) }
+  setTimeout(() => { if (luz.escuro && !gravando) dormir('apagaram a luz (calminho)') }, 4000)
+}
+function tickMedo() {
+  if (medo.esperandoAte && now() > medo.esperandoAte) {
+    medo.esperandoAte = 0; P.medoEscuro = clamp(P.medoEscuro + 0.02, 0, 1); store.set('pers', P)
+    if (luz.escuro && !dormindo) { evento({ label: 'dormi encolhidinho de medo', P: -0.2, interesse: 0.4, expr: 'medo', gesto: 'encolher', forcarGesto: true, dur: 2000 }); setTimeout(() => dormir('apagaram a luz (com medo)'), 2200) }
+  }
+}
+
+// ---------------------------------------------------------------- o que ele aprendeu e gosta (vai para a IA)
+function estadoV26() {
+  const out = []
+  if (P.hobby) out.push(`Seu hobby do momento: ${P.hobby.tema} (há ${Math.max(1, Math.round((Date.now() - P.hobby.desde) / 86400000))} dia(s)). De vez em quando comente algo sobre ele.`)
+  if (P.palavra?.dia === hojeSv()) out.push(`Palavra do dia que ${cfg.dono} te ensinou: "${P.palavra.palavra}". Tente usar no "pensamento" quando fizer sentido (não toda hora).`)
+  if (P.mania) out.push(`Sua mania: ${MANIAS[P.mania]}.`)
+  if (P.medoEscuro !== undefined) out.push(P.medoEscuro >= 0.25 ? `Você tem medo do escuro (${Math.round(P.medoEscuro * 100)}%), mas está melhorando com o carinho de ${cfg.dono}.` : 'Você perdeu o medo do escuro.')
+  if (P.time) out.push(`${cfg.dono} torce para o ${P.time}; você torce junto.${torcida.ultimo && torcida.ultimo.status !== 'sem_jogo' ? ` Jogo de hoje: ${P.time} ${torcida.ultimo.gols_time ?? '?'} x ${torcida.ultimo.gols_adversario ?? '?'} ${torcida.ultimo.adversario || ''} (${torcida.ultimo.status}).` : ''}`)
+  if (P.truques?.length) out.push(`Truques que ${cfg.dono} te ensinou: ${P.truques.map((x) => `"${x.palavra}" → ${x.nome}`).join('; ')}.`)
+  const ms = Object.keys(P.musicas || {}); if (ms.length) out.push(`Músicas que você aprendeu com ${cfg.dono}: ${ms.join(', ')}. Também sabe: ${CANCOES.map((c) => c.nome).join(', ')}.`)
+  if (P.musicasOuvidas?.length) out.push(`Músicas que você ouviu e reconheceu: ${P.musicasOuvidas.slice(0, 4).map((m) => m.titulo).join(', ')}.`)
+  if (P.agua?.dia === hojeSv()) out.push(`${cfg.dono} bebeu ${P.agua.copos} copo(s) de água hoje.`)
+  return out.join('\n')
+}
+
+// ---------------------------------------------------------------- a fala que cai nestes recursos (antes da IA)
+function interceptarV26(text) {
+  const t = text.trim(), n = txtN(t)
+  if (medo.esperandoAte && RE_CARINHO_NOITE.test(t)) { ouviu(t); consolarDoEscuro(); return true }
+  if (pedidoPalavra > now() && !brinc) {
+    pedidoPalavra = 0
+    if (RE_NAO.test(t) && t.split(/\s+/).length <= 4) { ouviu(t); evento({ label: 'hoje sem palavra nova', interesse: 0.3, expr: 'contente', gesto: 'sim', dur: 1500 }); return true }
+    if (guardarPalavra(t)) { ouviu(t); return true }
+  }
+  let m
+  if ((m = /(?:a )?palavra do dia (?:[ée]|vai ser)\s+(.+)|aprende a palavra\s+(.+)/i.exec(t))) { ouviu(t); if (!guardarPalavra(m[1] || m[2])) legendaSempre(`${cfg.nome}: Fala só a palavra!`); return true }
+  if (ensinarTruque(t)) return true
+  if (/esquece (o|os) truques?|esquece todos os truques/i.test(t)) { ouviu(t); P.truques = []; store.set('pers', P); legendaSempre(`${cfg.nome}: Esqueci os truques.`); return true }
+  const tr = !brinc && truqueDaFala(t)
+  if (tr) { ouviu(t); fazerTruque(tr, tr.palavra); return true }
+  if ((m = /(?:meu time [ée] (?:o |a )?|eu torço (?:pro |pra |para o |para a |pelo |pela |pro time do )|sou torcedor[a]? d[oa] )([\wÀ-ú .-]{2,30})/i.exec(t))) {
+    ouviu(t); P.time = m[1].replace(/[.!?]+$/, '').trim(); store.set('pers', P); torcida.dia = ''
+    evento({ label: `agora torço pro ${P.time}!`, P: 0.4, A: 0.5, interesse: 0.8, expr: 'empolgado', gesto: 'pulinhos', forcarGesto: true, icones: ['futebol', 'coracao'], dur: 2500 })
+    legendaSempre(`${cfg.nome}: Agora eu também torço pro ${P.time}! Vou ficar de olho nos jogos.`); return true
+  }
+  if (/(^|\s)(bebi|tomei)\s.*[áa]gua/i.test(t)) { ouviu(t); bebeuAgua(); return true }
+  if (/(regar|aguar) as plantas/i.test(t) && /(cada|todo|toda|lembr)/i.test(t)) {
+    ouviu(t); const d = numeroFalado(t) || 3
+    P.plantas = { cada: clamp(d, 1, 30), ultima: Date.now() }; store.set('pers', P)
+    evento({ label: `vou lembrar das plantas a cada ${P.plantas.cada} dia(s)`, P: 0.2, interesse: 0.6, expr: 'contente', gesto: 'sim', forcarGesto: true, icones: ['planta', 'calendario'], numero: `${P.plantas.cada}d`, dur: 2500 }); return true
+  }
+  if (/\b(reguei|aguei)\b/i.test(t) && P.plantas) { ouviu(t); P.plantas.ultima = Date.now(); store.set('pers', P); evento({ label: 'você regou as plantas', P: 0.3, interesse: 0.5, expr: 'feliz', gesto: 'sim', forcarGesto: true, icones: ['planta', 'coracao'], dur: 2000 }); return true }
+  if ((m = /(?:aprende|aprenda|grava|guarda) (?:essa|esta|a minha) cara(?:[:,]| de| que [ée]| chamada| se chama)?\s*(.*)|essa (?:[ée] a|cara se chama) (cara de .+)/i.exec(t))) {
+    ouviu(t); const nome = (m[1] || m[2] || '').trim(); ensinarCareta(/^cara/i.test(nome) ? nome : 'cara de ' + (nome || 'careta')); return true
+  }
+  if ((m = /faz (?:a |uma )?(cara de .+)/i.exec(t)) && fazerCareta(m[1])) { ouviu(t); return true }
+  // ensinar uma música: cantarolou e disse "essa é a música X" (ou corrigiu logo depois de ele cantar)
+  if ((m = /(?:essa|esta) (?:[ée]|era|se chama) (?:a música |a canção |a )?(.{2,40})|(?:essa|esta) música se chama (.{2,40})/i.exec(t)) && ultimaMelodia && now() - ultimaMelodia.t < 60000) {
+    ouviu(t); aprenderMusica((m[1] || m[2]).replace(/[.!?]+$/, '').trim(), ultimaMelodia.notas); return true
+  }
+  void n
+  return false
+}
+
+iniciarVidaV26()
+
 // ---------------------------------------------------------------- a fala passa por aqui antes da IA
 function interceptarFala(text) {
   if (alarme) {
@@ -2772,12 +3651,16 @@ function interceptarFala(text) {
     if (RE_NAO.test(text)) { ouviu(text); pararFoco(); return true }
   }
   if (brinc?.ouvir && brinc.ouvir(text)) return true
+  if (interceptarV26(text)) return true
   const lem = interpretarLembrete(text)
   if (lem && !lem.pendente) { ouviu(text); criarLembrete(lem); return true }
   return false
 }
 function tickDiversao() {
   tickLembretes(); tickFoco(); tickBicho(); tickFesta()
+  for (const f of [tickMusicaOuvida, tickTorcida, tickCuidados, tickHobby, tickMedo]) { try { f() } catch (e) { erroUmaVez('diversão ' + f.name, e) } }
+  const h = horaDoDia()
+  if (P.palavra?.pediu !== hojeSv() && temGente() && !dormindo && papo.estado === 'parado' && !brinc && !imag.ativo && !palco && h >= 9 && h < 21 && Math.random() < 0.004) pedirPalavra()
   if (brinc || alarme) papo.ate = Math.max(papo.ate, now() + 20000)
   if (now() > (tickDiversao.album || 0)) { tickDiversao.album = now() + 30000; conferirAlbum() }
 }
@@ -2866,7 +3749,7 @@ $('#tSonhar').onclick = () => { if (!dormindo) dormir('teste'); sono.remDur = 40
 $('#tPesadelo').onclick = () => { if (!dormindo) dormir('teste'); sono.remDur = 40000; comecarREM('pesadelo') }
 $('#tBoaNoite').onclick = () => ritualBoaNoite()
 $('#tTocaAqui').onclick = () => comecarTocaAqui()
-const BOTOES_DIVERSAO = { tCharada: brincCharada, tVinte: brincVinte, tQuiz: brincQuiz, tCareta: brincCareta, tImitaEu: brincImitaEu, tRitmo: brincRitmo, tEsconde: brincEsconde, tPPT: brincPPT, tDesenhar: () => fazerDesenho(), tDancar: dancar, tDiario: mostrarDiario, tNoticias: noticiasEmEmojis, tFoco: () => comecarFoco(1), tLembrete: () => criarLembrete({ quando: Date.now() + 60000, tipo: 'lembrete', texto: 'beber água' }), tTempo: () => falarDoTempo('hoje'), tBicho: chamarBicho, tPresente: darPresente, tAlbum: mostrarAlbum, tFesta: () => fazerFesta(), tPararBrinc: () => { acabarBrinc('botão'); pararFoco() } }
+const BOTOES_DIVERSAO = { tCharada: brincCharada, tVinte: brincVinte, tQuiz: brincQuiz, tCareta: brincCareta, tImitaEu: brincImitaEu, tRitmo: brincRitmo, tEsconde: brincEsconde, tPPT: brincPPT, tDesenhar: () => fazerDesenho(), tDancar: dancar, tDiario: mostrarDiario, tNoticias: noticiasEmEmojis, tFoco: () => comecarFoco(1), tLembrete: () => criarLembrete({ quando: Date.now() + 60000, tipo: 'lembrete', texto: 'beber água' }), tTempo: () => falarDoTempo('hoje'), tBicho: chamarBicho, tPresente: darPresente, tAlbum: mostrarAlbum, tFesta: () => fazerFesta(), tVelha: brincVelha, tAdivinhaSom: brincAdivinhaSom, tGenius: brincGenius, tHistoria2: brincHistoria2, tKaraoke: brincKaraoke, tQualMusica: () => qualMusica('pedido'), tMania: fazerMania, tAgua: bebeuAgua, tJogoTime: () => conferirJogo('pedido'), tPararBrinc: () => { acabarBrinc('botão'); pararFoco() } }
 for (const [id, f] of Object.entries(BOTOES_DIVERSAO)) $('#' + id).onclick = () => { if (dormindo) acordar(); f() }
 $('#tTerTemp').value = terrario.temp; $('#tTerUmid').value = terrario.umid
 $('#tTerTemp').oninput = (e) => { terrario.temp = +e.target.value; $('#tvT').textContent = terrario.temp; store.set('terrario', terrario) }
@@ -2947,6 +3830,7 @@ Vestindo     : ${Object.keys(vestido).join(', ') || '—'} · frio ${nivelFrio(c
 Mãos livres  : ${now() < vad.modoTVAte ? `modo TV (mais ${Math.ceil((vad.modoTVAte - now()) / 60000)} min) · ` : ''}${P.vozNome ? `voz do dono aprendida (${P.vozNome.n}) · ` : ''}${!cfg.maosLivres ? 'desligado' : !cfg.key ? 'precisa da chave' : vad.verificando ? 'conferindo se era com ele…' : vad.ativo ? 'ouvindo uma frase' : 'esperando o nome'} · ${vad.hora.length}/40 na hora${jogo ? `
 Jogo         : ${jogo.fase} · ${jogo.seq.length} notas` : ''}` + `
 Diversão     : ${brinc ? 'brincando de ' + brinc.tipo : '—'}${modoFoco ? ` · foco ${modoFoco.fase}${isFinite(modoFoco.fim) ? ' (' + Math.max(0, Math.ceil((modoFoco.fim - now()) / 60000)) + ' min)' : ''}` : ''}${alarme ? ' · ALARME tocando' : ''} · lembretes ${(P.lembretes || []).map((l) => hhmm(l.quando)).join(', ') || '—'} · álbum ${Object.keys(P.album || {}).length}/${FIGURINHAS.length} · desenhos ${(P.desenhos || []).length}
+Vida nova    : hobby ${P.hobby?.tema || '—'} · mania ${MANIAS[P.mania] || '—'} · medo do escuro ${Math.round((P.medoEscuro ?? 0) * 100)}% · palavra ${P.palavra?.dia === hojeSv() ? P.palavra.palavra : '—'} · time ${P.time || '—'} · água ${P.agua?.dia === hojeSv() ? P.agua.copos : 0}/8 · truques ${(P.truques || []).length} · caretas ${(P.caretas || []).length} · músicas ${Object.keys(P.musicas || {}).length} · Genius ${P.recordeGenius || 0}
 Terrário     : ${terrario.temp} °C · ${terrario.umid} %${bicho.ativo ? ' · bichinho passeando' : ''} · ${diasDeVida()} dia(s) de vida${P.local ? ' · previsão: ' + (textoPrevisao() || 'carregando') : ''}
 Desempenho   : C3 tela ${c3.perf.quadro.toFixed(1)} ms/quadro (${Math.round(c3.perf.fps)} fps) · S3 cérebro ${perf.cerebro.toFixed(2)} ms a cada 50 ms · ouvido ${perf.ouvido.toFixed(2)} ms a cada 23 ms · tom ${perf.tom.toFixed(2)} ms
 UART S3→C3   : ${uart.taxaMsgs.toFixed(1)} msg/s · ${Math.round(uart.taxaBytes)} B/s (${(uart.taxaBytes / 921.6).toFixed(2)} % de 921600 baud) · total ${uart.msgs} msgs, ${(uart.bytes / 1024).toFixed(1)} KB · C3→S3 ${uart.volta} B

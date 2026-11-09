@@ -208,12 +208,14 @@ Como responder:
 - "emote": em momentos FORTES (rir muito, se apaixonar, chorar, ficar furioso, levar susto, ficar chocado, ganhar presente), troque o rosto por um emote pixelado. No máximo 1 a cada 3 respostas; no resto, "".
 - Brincadeiras e rotina (ações): "charada" (charadas de emoji), "vinte_perguntas", "quiz" (contas), "careta" (imita a careta), "imita_eu", "ritmo" (palmas), "esconde" (esconde-esconde), "ppt" (pedra, papel e tesoura), "desenhar" (preencha "tema" com o que desenhar), "dancar", "diario" (resumo do dia em quadrinhos), "noticias", "foco" (modo foco/Pomodoro), "parar_foco", "tempo" (previsão do tempo), "album" (álbum de figurinhas). Lembretes e despertador: preencha "lembrete" com {"quando": "HH:MM" ou "+N" (minutos), "texto": "o que lembrar"}.
 - Outras ações: "cochilar" (pediu para você descansar ou tirar um cochilo), "cantar" (pediu para você cantar ou cantarolar uma música; NÃO é o jogo), "repetir_som" (${cfg.dono} quer ouvir o barulho que te assustou), "contar_historia" (quer saber o que você imaginou ou sonhou), "boa_noite" (disse boa noite ou mandou você dormir), "toca_aqui" (bater na mão), "devanear" (pediu para você imaginar algo), "decorar" (pediu para decorar a tela).
+- Mais brincadeiras: "velha" (jogo da velha), "adivinha_som" (adivinhar sons), "genius" (memória de cores), "historia_dupla" (inventar uma história juntos), "karaoke" (você toca o começo de uma música e ${cfg.dono} continua).
+- Música: "qual_musica" (${cfg.dono} quer que você reconheça uma música que está tocando ou que ele vai cantarolar); "cantar_musica" com "musica": "nome da música" (pediu uma música ESPECÍFICA; sem nome, use "cantar"). "placar" (quer saber do jogo do time dele).
 Use SÓ estes nomes (qualquer outro é ignorado):
 GESTOS: ${l.gestos.join(', ')}, nenhum
 EMOÇÕES: ${l.emocoes.join(', ')}
 ÍCONES: ${l.icones.join(', ')}
 EMOTES: ${l.emotes.join(', ')}
-Responda SÓ com JSON: {"gesto": "...", "emocao": "...", "intensidade": 0 a 1, "icones": [até 3 da lista, ou vazio], "numero": "" ou curto, "pensamento": "o que você quis dizer, numa frase curta em português", "afeto": número de -0.05 a 0.05, "lembrar": "frase curta se valer guardar na memória, senão vazio", "importancia": 1 a 10 (1 = banal, 10 = marcante), "acao": "" ou uma das ações, "emote": "" ou um emote, "espera_resposta": true/false, "som_significado": "", "opiniao_deco": "", "sugestao": {"data": "", "ideia": "", "elementos": [], "cores": []}, "aniversario_dono": "", "tema": "", "lembrete": {"quando": "", "texto": ""}}` }
+Responda SÓ com JSON: {"gesto": "...", "emocao": "...", "intensidade": 0 a 1, "icones": [até 3 da lista, ou vazio], "numero": "" ou curto, "pensamento": "o que você quis dizer, numa frase curta em português", "afeto": número de -0.05 a 0.05, "lembrar": "frase curta se valer guardar na memória, senão vazio", "importancia": 1 a 10 (1 = banal, 10 = marcante), "acao": "" ou uma das ações, "emote": "" ou um emote, "espera_resposta": true/false, "som_significado": "", "opiniao_deco": "", "sugestao": {"data": "", "ideia": "", "elementos": [], "cores": []}, "aniversario_dono": "", "tema": "", "musica": "", "lembrete": {"quando": "", "texto": ""}}` }
     return fixo.txt
   }
   function exemplos() {
@@ -304,10 +306,81 @@ Responda SÓ JSON: {"noticias": [{"icones": [...], "frase": "..."}]}`
     return json(await pesquisarNaWeb(pedido))
   }
 
+  // ---------------------------------------------------------------- Gemini com áudio ou busca (música, sons, futebol)
+  // Vai pelos modelos do Gemini (o leve primeiro, se pedir), pulando os que estão no limite.
+  async function gemini(partes, { busca = false, leve = false, temperatura = 0.4 } = {}) {
+    if (!cfg.geminiKey || !modelosGemini.length) throw new Error('sem Gemini (falta a chave em ⚙️)')
+    const flash = modelosGemini.find((m) => /flash(?!.*lite)/.test(m)), lite = modelosGemini.find((m) => /flash.*lite/.test(m))
+    const fila = [...new Set((leve ? [lite, flash] : [flash, lite]).concat(modelosGemini).filter(Boolean))].filter((m) => !(esfriando[m] > Date.now()))
+    if (!fila.length) throw new Error('IA 429: Gemini no limite agora')
+    let erro
+    for (const m of fila) {
+      try {
+        const corpo = { contents: [{ role: 'user', parts: partes }], ...(busca ? { tools: [{ google_search: {} }] } : { generationConfig: { responseMimeType: 'application/json', temperature: temperatura, maxOutputTokens: 1024 } }) }
+        const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m.slice(7)}:generateContent`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': cfg.geminiKey }, body: JSON.stringify(corpo) })
+        if (!r.ok) throw new Error(`Gemini ${r.status}: ${(await r.text()).replace(/\s+/g, ' ').slice(0, 300)}`)
+        const j = await r.json()
+        anotarUso(m, j.usageMetadata?.totalTokenCount)
+        return json((j.candidates?.[0]?.content?.parts || []).map((x) => x.text || '').join(''))
+      } catch (e) {
+        erro = e
+        if (/ 429| 503|RESOURCE_EXHAUSTED|quota/i.test(e.message)) { const { seg } = esfriar(m, e.message); log(`IA: ${curto(m)} no limite (volta em ${Math.ceil(seg)} s)`) }
+        else if (/ 40[013]/.test(e.message)) throw e
+        else log(`IA: ${curto(m)} falhou (${e.message.slice(0, 120)})`)
+      }
+    }
+    throw erro
+  }
+  const audioParte = (b64) => ({ inlineData: { mimeType: 'audio/wav', data: b64 } })
+  // "Que música é essa?": música tocando ou alguém cantarolando/assobiando.
+  async function identificarMusica(b64) {
+    return gemini([{ text: `Este áudio tem uma música tocando, ou alguém cantarolando ou assobiando uma música. Identifique a música, se der.
+Responda SÓ JSON: {"titulo": "nome da música ou vazio se não souber", "artista": "", "confianca": 0 a 1, "o_que_ouviu": "musica_tocando" | "cantarolando" | "assobio" | "fala" | "silencio" | "outro", "estilo": "uma ou duas palavras em português"}
+Seja honesto: se não tiver certeza, use confianca baixa. Não invente.` }, audioParte(b64)], { temperatura: 0.2 })
+  }
+  // "Adivinha o som": a pessoa imita um bicho ou um barulho.
+  async function adivinharSom(b64) {
+    const l = L()
+    return gemini([{ text: `Uma pessoa está imitando com a boca um som (um bicho, um objeto ou um barulho) para um robô adivinhar. Que som ela está imitando?
+Responda SÓ JSON: {"som": "nome curto em português, com artigo (ex.: um gato, uma ambulância)", "icones": [1 ou 2 desta lista: ${l.icones.join(', ')}], "confianca": 0 a 1}` }, audioParte(b64)], { temperatura: 0.3 })
+  }
+  // Melodia de uma música pedida, em semitons e tempos (é aproximado; o dono corrige assobiando).
+  async function notasDaMusica(nome) {
+    const sys = `Você ajuda um robozinho a cantarolar músicas com bipes. Escreva a melodia do começo (o trecho mais conhecido, 12 a 24 notas) de: "${nome}".
+Formato: cada nota é [semitom, tempos]. Semitom relativo à tônica (0 = tônica, 12 = oitava acima, -5 = quinta abaixo; use null para pausa). Tempos: 1 = uma batida (0.5 colcheia, 2 mínima).
+Se não conhecer a música, responda {"conhece": false}.
+Responda SÓ JSON: {"conhece": true, "titulo": "nome certo da música", "bpm": 60 a 180, "notas": [[0, 1], [2, 0.5], ...]}`
+    const r = await pedirJSON([{ role: 'system', content: sys }, { role: 'user', content: 'Escreva a melodia agora, em JSON.' }], 'melodia', { temperature: 0.2 }, 'conversa')
+    return json(r.choices[0].message.content)
+  }
+  // Torcedor: agenda do dia e placar ao vivo (busca do Google pelo Gemini).
+  async function futebol(time, tipo) {
+    const hoje = new Date().toLocaleDateString('pt-BR')
+    const pedido = tipo === 'agenda'
+      ? `Pesquise: o time de futebol "${time}" joga hoje (${hoje})? Responda SÓ JSON: {"tem_jogo": true|false, "adversario": "", "horario": "HH:MM no horário de Brasília", "competicao": ""}`
+      : `Pesquise o placar AGORA do jogo de hoje (${hoje}) do time de futebol "${time}". Responda SÓ JSON: {"adversario": "", "gols_time": número, "gols_adversario": número, "status": "nao_comecou" | "ao_vivo" | "intervalo" | "encerrado" | "sem_jogo", "minuto": número ou null}`
+    const r = await gemini([{ text: pedido }], { busca: true, leve: true })
+    return r
+  }
+  // História a dois: um quadrinho seu, um meu.
+  async function historiaADois(d) {
+    const l = L()
+    const sys = `Você é ${cfg.nome}, um robozinho de mesa que inventa histórias junto com ${cfg.dono}, em quadrinhos de ícones. Cada quadrinho: 1 a 3 ícones da lista, a emoção e uma frase curta (até 12 palavras, em português).
+Quadrinhos até agora: ${d.quadros.map((q, i) => `${i + 1}. ${q.frase}`).join(' ') || 'nenhum (você começa)'}
+${d.fala ? `${cfg.dono} continuou assim: "${d.fala}". Transforme a fala dele num quadrinho ("seu_quadro") e depois continue com o seu ("meu_quadro"), aproveitando a ideia dele.` : 'Comece a história com um quadrinho ("meu_quadro") que deixe um gancho divertido.'}
+${d.fim ? 'Este é o FIM: o seu quadrinho fecha a história de um jeito bonito ou engraçado, e dê um título.' : ''}
+ÍCONES: ${l.icones.join(', ')}
+EMOÇÕES: ${l.emocoes.join(', ')}
+Responda SÓ JSON: {"seu_quadro": {"icones": [], "emocao": "", "frase": ""} ou null, "meu_quadro": {"icones": [], "emocao": "", "frase": ""}, "titulo": "${d.fim ? 'título curto' : ''}"}`
+    const r = await pedirJSON([{ role: 'system', content: sys }, { role: 'user', content: 'Continue em JSON.' }], 'historia2', { temperature: 0.9 }, 'conversa')
+    return json(r.choices[0].message.content)
+  }
+
   return {
     curto, conferirModelos, conferirGemini, listarModelos, modelos: () => ({ groq: modelosGroq, gemini: modelosGemini }), erroGemini: () => erroGemini,
     transcrever, conversar, registrarTroca, anotarUso,
     imaginar, refletir, desenhar, vinte, pesquisarIdeia, noticias, podePesquisar,
+    identificarMusica, adivinharSom, notasDaMusica, futebol, historiaADois, temGemini: () => !!(cfg.geminiKey && modelosGemini.length),
     folego, voltaDaIA, cotaTexto, esgotarParaTeste, liberarTeste,
   }
 }
