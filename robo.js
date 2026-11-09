@@ -17,7 +17,7 @@ const store = {
 }
 
 // ---------------------------------------------------------------- barramento
-const VERSAO = 'v17 · 08/11'
+const VERSAO = 'v18 · 08/11'
 const logLines = []
 const filaLog = [] // tudo o que aconteceu desde o último envio para o log remoto
 function pushLog(s) {
@@ -477,12 +477,13 @@ function desenharOlho(cx, cy, w, h, lado, p, cor, forma = 'normal', t = 0) {
   const r = Math.min(w, h) * 0.3
   g.fillStyle = cor
   g.beginPath(); g.roundRect(cx - w / 2, cy - h / 2, w, h, Math.max(1, Math.min(r, h / 2))); g.fill()
-  g.fillStyle = '#000'
+  g.save(); g.globalCompositeOperation = 'destination-out'; g.fillStyle = '#000' // as máscaras "recortam" o olho: o fundo aparece por trás
   const top = cy - h / 2 - 1, L = cx - w / 2 - 1, R = cx + w / 2 + 1
   const fora = lado < 0 ? L : R, dentro = lado < 0 ? R : L
   if (p.tired > 0.02) { g.beginPath(); g.moveTo(L, top); g.lineTo(R, top); g.lineTo(fora, top + p.tired * h * 0.75); g.closePath(); g.fill() }
   if (p.angry > 0.02) { g.beginPath(); g.moveTo(L, top); g.lineTo(R, top); g.lineTo(dentro, top + p.angry * h * 0.75); g.closePath(); g.fill() }
   if (p.happy > 0.02) { g.beginPath(); g.ellipse(cx, cy + h * (1 - 0.5 * p.happy) + 2, w * 0.8, h * 0.55, 0, 0, Math.PI * 2); g.fill() }
+  g.restore()
 }
 
 function desenharIcone(tipo, t) {
@@ -572,8 +573,7 @@ function quadro() {
   inclinacao = lerp(inclinacao, alvoIncl, vo)
 
   g = palco ? gF : gTela
-  g.fillStyle = '#000'; g.fillRect(0, 0, 240, 240)
-  desenharCorHumor()
+  g.clearRect(0, 0, 240, 240)
   g.save()
   let ox = olhar.x * 20 + (ge.ox || 0), oy = olhar.y * 14 + cur.dy - balanco * 9 + (ge.oy || 0)
   const nf = nivelFrio(clima.temp)
@@ -624,6 +624,7 @@ function quadro() {
     g.save(); g.globalAlpha = 0.45; g.textAlign = 'center'; g.font = '16px "Noto Color Emoji", "Apple Color Emoji", "Segoe UI Emoji", sans-serif'
     q.icones.forEach((k, i) => g.fillText(ICONES[k], 170 + i * 20, 84)); g.restore()
   }
+  g.save(); g.globalCompositeOperation = 'destination-over'; desenharCorHumor(); g.fillStyle = '#000'; g.fillRect(0, 0, 240, 240); g.restore() // fundo por trás de tudo
   if (palco) { g = gTela; compor(t) }
   desenharNevoa(t)
   desenharMoldura(t)
