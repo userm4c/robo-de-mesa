@@ -27,7 +27,7 @@ const store = {
 }
 
 // ---------------------------------------------------------------- barramento
-const VERSAO = 'v30 · 09/11'
+const VERSAO = 'v31 · 09/11'
 const logLines = []
 const filaLog = [] // tudo o que aconteceu desde o último envio para o log remoto
 function pushLog(s) {
@@ -1494,6 +1494,7 @@ async function responder(text, vh, contexto) {
   if (interceptarFala(text)) return
   abrirConversa()
   const ctx = contexto || papo.contexto, tPergunta = now(); papo.contexto = null
+  anotarFamilia(text)
   pushLog(`Você: ${text}`)
   legenda(`Você: ${text}`)
   foco = { expr: 'pensando', ate: now() + 15000 }; icone = { tipo: 'reticencias', ate: now() + 15000 }
@@ -3618,6 +3619,7 @@ function estadoV26() {
   if (P.palavra?.dia === hojeSv()) out.push(`Palavra do dia que ${cfg.dono} te ensinou: "${P.palavra.palavra}". Tente usar no "pensamento" quando fizer sentido (não toda hora).`)
   if (P.mania) out.push(`Sua mania: ${MANIAS[P.mania]}.`)
   if (P.medoEscuro !== undefined) out.push(P.medoEscuro >= 0.25 ? `Você tem medo do escuro (${Math.round(P.medoEscuro * 100)}%), mas está melhorando com o carinho de ${cfg.dono}.` : 'Você perdeu o medo do escuro.')
+  if (P.familia?.length) out.push(`Família e bichos de ${cfg.dono} (lembre sempre): ${P.familia.map((f) => `${f.nome} (${f.quem})`).join(', ')}.`)
   if (P.time) out.push(`${cfg.dono} torce para o ${P.time}; você torce junto.${torcida.ultimo && torcida.ultimo.status !== 'sem_jogo' ? ` Jogo de hoje: ${P.time} ${torcida.ultimo.gols_time ?? '?'} x ${torcida.ultimo.gols_adversario ?? '?'} ${torcida.ultimo.adversario || ''} (${torcida.ultimo.status}).` : ''}`)
   if (P.truques?.length) out.push(`Truques que ${cfg.dono} te ensinou: ${P.truques.map((x) => `"${x.palavra}" → ${x.nome}`).join('; ')}.`)
   const ms = Object.keys(P.musicas || {}); if (ms.length) out.push(`Músicas que você aprendeu com ${cfg.dono}: ${ms.join(', ')}. Também sabe: ${CANCOES.map((c) => c.nome).join(', ')}.`)
@@ -3628,6 +3630,29 @@ function estadoV26() {
 }
 
 // ---------------------------------------------------------------- a fala que cai nestes recursos (antes da IA)
+// Família e bichos do dono: "Paçoca é o nome da minha gata", "meu cachorro se chama Rex", "tenho um gato chamado Jake".
+// Guardado à parte (não depende de a IA lembrar) e sempre informado à IA.
+const NAO_NOME = /^(o|a|um|uma|ele|ela|isso|esse|essa|que|meu|minha|seu|sua|muito|bem|da|do|de|das|dos|dele|dela|nome)$/i
+function anotarFamilia(text) {
+  const achados = []
+  const re = [
+    [/([A-Za-zÀ-ú][\wÀ-ú]{2,20}) (?:é|e) o nome d[oa] (?:meu|minha) ([\wÀ-ú]{3,15})/gi, 1, 2],
+    [/o nome d[oa] (?:meu|minha) ([\wÀ-ú]{3,15}) (?:é|e) ([A-Za-zÀ-ú][\wÀ-ú]{2,20})/gi, 2, 1],
+    [/(?:meu|minha) ([\wÀ-ú]{3,15}) (?:se chama|chama) ([A-Za-zÀ-ú][\wÀ-ú]{2,20})/gi, 2, 1],
+    [/(?:tem|tenho) (?:um|uma) ([\wÀ-ú]{3,15}) chamad[oa] ([A-Za-zÀ-ú][\wÀ-ú]{2,20})/gi, 2, 1],
+  ]
+  for (const [r, iN, iQ] of re) for (const m of String(text).matchAll(r)) if (!NAO_NOME.test(m[iN])) achados.push({ nome: m[iN][0].toUpperCase() + m[iN].slice(1), quem: m[iQ].toLowerCase() })
+  for (const a of achados) {
+    P.familia ||= []
+    const ja = P.familia.find((x) => txtN(x.nome) === txtN(a.nome))
+    if (ja && ja.quem === a.quem) continue
+    if (ja) ja.quem = a.quem; else P.familia.push({ ...a, t: Date.now() })
+    store.set('pers', P)
+    lembrar(`${a.nome} é ${/a$/.test(a.quem) ? 'a' : 'o'} ${a.quem} de ${cfg.dono}`, 8, 'pessoa')
+    pushLog(`Família→ ${a.nome} (${a.quem})`)
+  }
+  return achados.length > 0
+}
 function interceptarV26(text) {
   const t = text.trim(), n = txtN(t)
   if (pedidoAtualizar.ate > now()) {
@@ -3779,6 +3804,7 @@ function ensinarFala(text) {
 // instalando" (chuva de letras) e, ao voltar, conta o que aprendeu a fazer.
 const NOVIDADES = {
   v28: [['mundo', 'lembrar de tudo em qualquer aparelho']],
+  v31: [['gato', 'guardar o nome da sua família e dos seus bichos']],
   v30: [['ideia', 'lembrar qual versão eu era, pra contar as novidades']],
   v29: [['seta_cima', 'perceber quando tem versão nova e pedir pra atualizar'], ['musica', 'falar umas palavrinhas de verdade (e aprender mais)'], ['agua', 'entender “acabei de beber água” e mostrar o copo'], ['ouvido', 'ouvir mais frases por hora']],
 }
@@ -3845,6 +3871,7 @@ function despertarAtualizado(a) {
 }
 
 iniciarFala()
+if (!P.familia) { P.familia = []; for (const m of memorias) anotarFamilia(m.txt.replace(new RegExp('^' + cfg.dono + ' tem', 'i'), 'tenho')) }
 
 // ---------------------------------------------------------------- a fala passa por aqui antes da IA
 function interceptarFala(text) {
@@ -4038,6 +4065,7 @@ Vestindo     : ${Object.keys(vestido).join(', ') || '—'} · frio ${nivelFrio(c
 Mãos livres  : ${now() < vad.modoTVAte ? `modo TV (mais ${Math.ceil((vad.modoTVAte - now()) / 60000)} min) · ` : ''}${P.vozNome ? `voz do dono aprendida (${P.vozNome.n}) · ` : ''}${!cfg.maosLivres ? 'desligado' : !cfg.key ? 'precisa da chave' : vad.verificando ? 'conferindo se era com ele…' : vad.ativo ? 'ouvindo uma frase' : 'esperando o nome'} · ${vad.hora.length}/200 na hora${jogo ? `
 Jogo         : ${jogo.fase} · ${jogo.seq.length} notas` : ''}` + `
 Diversão     : ${brinc ? 'brincando de ' + brinc.tipo : '—'}${modoFoco ? ` · foco ${modoFoco.fase}${isFinite(modoFoco.fim) ? ' (' + Math.max(0, Math.ceil((modoFoco.fim - now()) / 60000)) + ' min)' : ''}` : ''}${alarme ? ' · ALARME tocando' : ''} · lembretes ${(P.lembretes || []).map((l) => hhmm(l.quando)).join(', ') || '—'} · álbum ${Object.keys(P.album || {}).length}/${FIGURINHAS.length} · desenhos ${(P.desenhos || []).length}
+Família      : ${(P.familia || []).map((f) => `${f.nome} (${f.quem})`).join(', ') || '—'}
 Fala         : ${P.fala?.vocab?.length || 0} palavra(s): ${(P.fala?.vocab || []).join(', ') || '—'} · vontade de falar ${Math.round(vontadeFalar() * 100)}% · vozes pt ${vozesPt().length}
 Vida nova    : hobby ${P.hobby?.tema || '—'} · mania ${MANIAS[P.mania] || '—'} · medo do escuro ${Math.round((P.medoEscuro ?? 0) * 100)}% · palavra ${P.palavra?.dia === hojeSv() ? P.palavra.palavra : '—'} · time ${P.time || '—'} · água ${P.agua?.dia === hojeSv() ? P.agua.copos : 0}/8 · truques ${(P.truques || []).length} · caretas ${(P.caretas || []).length} · músicas ${Object.keys(P.musicas || {}).length} · Genius ${P.recordeGenius || 0}
 Terrário     : ${terrario.temp} °C · ${terrario.umid} %${bicho.ativo ? ' · bichinho passeando' : ''} · ${diasDeVida()} dia(s) de vida${P.local ? ' · previsão: ' + (textoPrevisao() || 'carregando') : ''}
