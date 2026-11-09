@@ -17,7 +17,7 @@ const store = {
 }
 
 // ---------------------------------------------------------------- barramento
-const VERSAO = 'v18 · 08/11'
+const VERSAO = 'v19 · 08/11'
 const logLines = []
 const filaLog = [] // tudo o que aconteceu desde o último envio para o log remoto
 function pushLog(s) {
@@ -1425,8 +1425,8 @@ cv.addEventListener('pointerdown', () => {
   evento({ label: 'carinho na cabeça', P: 0.5, A: 0.15, interesse: 0.85, expr: Math.random() < 0.35 ? 'timido' : 'amor', icone: 'coracao', som: 'amor', gesto: Math.random() < 0.3 ? 'piscadela' : null, tipo: 'toque', social: 0.06, confianca: 0.005, dur: 2000 })
   P.afeto = clamp(P.afeto + 0.004, 0.05, 0.95)
 })
-$('#temp').oninput = (e) => { clima.temp = +e.target.value; $('#tv').textContent = clima.temp; termo.prox = 0 }
-$('#umid').oninput = (e) => { clima.umid = +e.target.value; $('#hv').textContent = clima.umid; termo.prox = 0 }
+$('#temp').oninput = (e) => { clima.temp = +e.target.value; $('#tv').textContent = clima.temp; termo.prox = now() + 1500 }
+$('#umid').oninput = (e) => { clima.umid = +e.target.value; $('#hv').textContent = clima.umid; termo.prox = now() + 1500 }
 
 // ================================================================ GROQ: conversa
 let gravando = false, rec = null, micStream = null
@@ -1492,7 +1492,7 @@ function erroConversa(err) {
   somDe('triste', 0.4)
 }
 // Formato da resposta preso às listas: o modelo não consegue inventar gesto, emoção ou ícone.
-const ACOES = ['', 'charada', 'vinte_perguntas', 'quiz', 'careta', 'imita_eu', 'ritmo', 'esconde', 'ppt', 'desenhar', 'dancar', 'diario', 'noticias', 'foco', 'parar_foco', 'tempo', 'album', 'cantar', 'jogo_melodia', 'repetir_som', 'contar_historia', 'boa_noite', 'toca_aqui', 'devanear', 'decorar']
+const ACOES = ['', 'ver_desenho', 'charada', 'vinte_perguntas', 'quiz', 'careta', 'imita_eu', 'ritmo', 'esconde', 'ppt', 'desenhar', 'dancar', 'diario', 'noticias', 'foco', 'parar_foco', 'tempo', 'album', 'cantar', 'jogo_melodia', 'repetir_som', 'contar_historia', 'boa_noite', 'toca_aqui', 'devanear', 'decorar']
 const ESQUEMA = () => ({
   type: 'object', additionalProperties: false,
   required: ['gesto', 'emocao', 'intensidade', 'icones', 'numero', 'pensamento', 'afeto', 'lembrar', 'importancia', 'acao', 'emote', 'espera_resposta', 'som_significado', 'opiniao_deco', 'sugestao', 'aniversario_dono'],
@@ -1743,6 +1743,19 @@ function exemplosFixos() {
 }
 
 // Respostas na hora, sem IA, para frases simples (economiza a cota e é mais rápido).
+// "Desenhe outro gato melhor" → "gato"; "Eu pedi um gato, você desenhou uma casa? Desenhe um gato." → "gato"
+function temaDoDesenho(texto) {
+  const pedidos = [...String(texto).matchAll(/desenh(?:a|e|ar)\b\s*(?:pra mim\s+|para mim\s+)?(.*?)(?=[.?!,;]|$)/gi)]
+  const ult = pedidos.length ? pedidos[pedidos.length - 1][1] : ''
+  return ult.replace(/^(um|uma|o|a|outro|outra|de novo|novamente)\s+/i, '').replace(/^(um|uma|o|a)\s+/i, '').replace(/\s+(melhor|de novo|novamente|pra mim|para mim|por favor|a[ií])$/i, '').replace(/\s+(melhor|de novo)$/i, '').trim()
+}
+function verDesenho(pedido) {
+  const lista = P.desenhos || []
+  if (!lista.length) return evento({ label: 'ainda não desenhei nada', gesto: 'nao_sei', forcarGesto: true, icones: ['ideia', 'pergunta'], interesse: 0.4, dur: 2500 })
+  const ps = txtN(pedido).replace(/inho|inha/g, 'o').split(/[^a-z]+/).filter((w) => w.length > 2)
+  const d = lista.find((x) => ps.some((w) => txtN(x.tema + ' ' + x.titulo).replace(/inho|inha/g, 'o').includes(w))) || lista[0]
+  mostrarDesenho(d, 'Olha o desenho:')
+}
 function respostaLocal(texto) {
   const t = texto.trim().toLowerCase(), n = t.split(/\s+/).length
   if (n > 16) return null
@@ -1761,7 +1774,8 @@ function respostaLocal(texto) {
     if (/palma|ritmo/.test(t) && /jog|brinc|vamos|bora|ritmo/.test(t)) return ac('ritmo', ['musica'], 'Escuta o ritmo!')
     if (/esconde/.test(t)) return ac('esconde', ['olhos'], 'Vou contar!')
     if (/pedra|jokenp|jo ken p/.test(t)) return ac('ppt', ['jogo'], 'Melhor de 3!')
-    if (/(^|\s)desenh/.test(t)) return ac('desenhar', ['ideia'], 'Vou desenhar!', { tema: ((/desenh\w*\s+(?:pra mim\s+)?(?:um |uma |o |a )?(.+)/.exec(texto) || [])[1] || '').replace(/\s*(pra mim|para mim|por favor|a[ií])[\s?!.]*$/i, '') })
+    if (/desenho/.test(t) && /(mostr|de novo|novamente|outra vez|ver o|v[êe] o|lembra)/.test(t) && !/(outro|outra|melhor|novo desenho|faz|fa[çc]a|desenhe)/.test(t)) return ac('ver_desenho', ['ideia'], 'Olha!', { tema: t })
+    if (/(^|\s)desenh/.test(t)) return ac('desenhar', ['ideia'], 'Vou desenhar!', { tema: temaDoDesenho(texto) })
     if (/(^|\s)dan[çc]a/.test(t)) return ac('dancar', ['musica'], 'Bora dançar!')
     if (/di[áa]rio|nosso dia|resumo do dia/.test(t)) return ac('diario', ['livro'], 'Olha nosso dia!')
     if (/not[íi]cia/.test(t)) return ac('noticias', ['mundo'], 'Vou ver!')
@@ -1820,7 +1834,7 @@ Acontecimentos recentes: ${acontecimentos.slice(0, 6).map((a) => `${a.txt} (há 
 Coisas que você lembra:
 ${recentes}
 ${estadoVida()}
-${textoPrevisao()}${brinc ? `\nVocês estão brincando de: ${brinc.tipo}.` : ''}${modoFoco ? `\n${cfg.dono} está em modo foco (${modoFoco.fase}).` : ''}
+${textoPrevisao()}${terrario.ativo ? `\nSeu terrário agora (sensor${terrario.simulado === false ? '' : ' simulado'}): ${terrario.temp} °C, umidade ${terrario.umid} %${terrario.umid < 50 ? ' (seco!)' : ''}. Fale dele só com esses dados; não invente.` : ''}${brinc ? `\nVocês estão brincando de: ${brinc.tipo}.` : ''}${modoFoco ? `\n${cfg.dono} está em modo foco (${modoFoco.fase}).` : ''}
 
 ${sobreDeco ? `DATAS (ids): ${DATAS.map((d) => `${d.id} (${nomeData(d.id)})`).join(', ')}
 ELEMENTOS de decoração: ${ELEMENTOS.join(', ')}. CORES: ${Object.entries(NOME_COR).map(([k, v]) => `${k}=${v}`).join(', ')}` : ''}
@@ -1883,9 +1897,9 @@ ELEMENTOS de decoração: ${ELEMENTOS.join(', ')}. CORES: ${Object.entries(NOME_
     else if (sobreDeco && /\b(coloc|adicion|p[õo]e|p[õo]r|bota|decor|enfeit|acrescent|faz|faça)/i.test(text)) receberSugestao({ data: dataAtiva()?.id || '', ideia: text.slice(0, 100), elementos: [], cores: [] })
     if (/^\d{1,2}\/\d{1,2}$/.test(j.aniversario_dono || '') && P.anivDono !== j.aniversario_dono) { P.anivDono = j.aniversario_dono; lembrar(`O aniversário de ${cfg.dono} é ${j.aniversario_dono}`, 8); store.set('pers', P) }
     if (ctx?.tipo === 'pesadelo' && v[0] > 0.2) { P.confianca = clamp(P.confianca + 0.02, 0.05, 0.95); lembrar(`${cfg.dono} me consolou depois de um pesadelo`, 7) }
-    const ACAO_COMBINA = { charada: /charad|advinh|adivinh|emoji/i, vinte_perguntas: /pergunta|adivinh/i, quiz: /quiz|conta|soma|matem/i, careta: /careta|imit/i, imita_eu: /imit/i, ritmo: /palma|ritmo/i, esconde: /escond/i, ppt: /pedra|papel|tesoura|jokenp/i, desenhar: /desenh|pint|rabisc/i, dancar: /dan[çc]/i, diario: /di[áa]rio|dia/i, noticias: /not[íi]cia|aconteceu|novidade/i, foco: /foco|trabalh|estud|pomodoro|concentr/i, parar_foco: /foco|terminei|acabei|parar/i, tempo: /chov|chuva|tempo|previs|sol|frio|calor/i, album: /[áa]lbum|figurinha/i, cantar: /cant|m[úu]sica|melodia/i, jogo_melodia: /jog|brinc|melodia/i, repetir_som: /barulh|som|assust/i, contar_historia: /hist[óo]ria|sonh|imagin|cont/i, boa_noite: /noite|dorm|cochil|sono/i, toca_aqui: /toca|bate|m[ãa]o/i, devanear: /imagin|invent|devane|sonh/i, decorar: /decor|enfeit|natal|festa/i }
+    const ACAO_COMBINA = { ver_desenho: /desenh/i, charada: /charad|advinh|adivinh|emoji/i, vinte_perguntas: /pergunta|adivinh/i, quiz: /quiz|conta|soma|matem/i, careta: /careta|imit/i, imita_eu: /imit/i, ritmo: /palma|ritmo/i, esconde: /escond/i, ppt: /pedra|papel|tesoura|jokenp/i, desenhar: /desenh|pint|rabisc/i, dancar: /dan[çc]/i, diario: /di[áa]rio|dia/i, noticias: /not[íi]cia|aconteceu|novidade/i, foco: /foco|trabalh|estud|pomodoro|concentr/i, parar_foco: /foco|terminei|acabei|parar/i, tempo: /chov|chuva|tempo|previs|sol|frio|calor/i, album: /[áa]lbum|figurinha/i, cantar: /cant|m[úu]sica|melodia/i, jogo_melodia: /jog|brinc|melodia/i, repetir_som: /barulh|som|assust/i, contar_historia: /hist[óo]ria|sonh|imagin|cont/i, boa_noite: /noite|dorm|cochil|sono/i, toca_aqui: /toca|bate|m[ãa]o/i, devanear: /imagin|invent|devane|sonh/i, decorar: /decor|enfeit|natal|festa/i }
     if (j.acao && ACAO_COMBINA[j.acao] && !ACAO_COMBINA[j.acao].test(text)) { pushLog(`IA: ação "${j.acao}" ignorada (não combina com a frase)`); j.acao = '' }
-    const acoes = { charada: brincCharada, vinte_perguntas: brincVinte, quiz: brincQuiz, careta: brincCareta, imita_eu: brincImitaEu, ritmo: brincRitmo, esconde: brincEsconde, ppt: brincPPT, desenhar: () => fazerDesenho(j.tema || ''), dancar, diario: mostrarDiario, noticias: noticiasEmEmojis, foco: () => comecarFoco(), parar_foco: pararFoco, tempo: () => falarDoTempo(text), album: mostrarAlbum, cantar: cantarMusica, jogo_melodia: iniciarJogo, repetir_som: repetirUltimoSom, contar_historia: () => contarHistoria(), boa_noite: ritualBoaNoite, toca_aqui: comecarTocaAqui, devanear: () => devanear(true), decorar: () => decorar(true) }
+    const acoes = { ver_desenho: () => verDesenho(j.tema || text), charada: brincCharada, vinte_perguntas: brincVinte, quiz: brincQuiz, careta: brincCareta, imita_eu: brincImitaEu, ritmo: brincRitmo, esconde: brincEsconde, ppt: brincPPT, desenhar: () => fazerDesenho(j.tema || ''), dancar, diario: mostrarDiario, noticias: noticiasEmEmojis, foco: () => comecarFoco(), parar_foco: pararFoco, tempo: () => falarDoTempo(text), album: mostrarAlbum, cantar: cantarMusica, jogo_melodia: iniciarJogo, repetir_som: repetirUltimoSom, contar_historia: () => contarHistoria(), boa_noite: ritualBoaNoite, toca_aqui: comecarTocaAqui, devanear: () => devanear(true), decorar: () => decorar(true) }
     if (acoes[j.acao]) setTimeout(acoes[j.acao], r.modelo === 'local' ? 1200 : j.acao === 'toca_aqui' ? 2000 : 2600)
     if (RE_TCHAU.test(text) && j.acao !== 'boa_noite') papo.ate = now() + 4000
   } catch (err) { erroConversa(err) }
@@ -2504,6 +2518,7 @@ async function devanear(forcar = false) {
   guardarHistoria(h)
 }
 function contarHistoria(m = historiaParaContar()) {
+  ultimaVez.contar_historia = now()
   m = m || memorias.find((x) => x.historia)
   if (!m?.historia) return evento({ label: 'não imaginei nada ainda', gesto: 'nao_sei', forcarGesto: true, icones: ['pensando' in ICONES ? 'pensando' : 'cerebro', 'pergunta'], interesse: 0.4, dur: 2500 })
   pararImaginacao()
@@ -2653,7 +2668,7 @@ function pascoa(a) {
 }
 const somaDias = (d, n) => new Date(d.getTime() + n * 86400000)
 const DATAS = [
-  { id: 'natal', nome: 'o Natal', quando: (a) => new Date(a, 11, 25, 12), antes: 50, depois: 1, deco: [{ el: 'luzes' }, { el: 'neve' }] },
+  { id: 'natal', nome: 'o Natal', quando: (a) => new Date(a, 11, 25, 12), antes: 50, depois: 1, deco: [{ el: 'arvore' }, { el: 'luzes' }, { el: 'neve' }] },
   { id: 'ano_novo', nome: 'o Ano-Novo', quando: (a) => new Date(a, 11, 31, 12), antes: 4, depois: 1, deco: [{ el: 'fogos' }, { el: 'confete', cores: ['y', 'w', 'o'] }] },
   { id: 'carnaval', nome: 'o Carnaval', quando: (a) => somaDias(pascoa(a), -47), antes: 7, depois: 1, deco: [{ el: 'confete' }, { el: 'serpentina' }] },
   { id: 'pascoa', nome: 'a Páscoa', quando: pascoa, antes: 6, depois: 1, deco: [{ el: 'ovos' }, { el: 'flores' }] },
@@ -2675,6 +2690,7 @@ function dataAtiva() {
   return null
 }
 function decoracaoAtual() {
+  if (P.deco?.data === 'natal' && !P.deco.elementos.some((e) => e.el === 'arvore')) { P.deco.elementos.unshift({ el: 'arvore', cores: [] }); store.set('pers', P) }
   const d = dataAtiva()
   return d && P.deco && P.deco.chave === d.id + d.ano ? P.deco.elementos : null
 }
@@ -3118,7 +3134,9 @@ async function fazerDesenho(tema, intro = '') {
   pushLog(`Desenho→ desenhando "${tema}"…`)
   foco = { expr: 'pensando', ate: now() + 9000 }; icone = { tipo: 'reticencias', ate: now() + 9000 }
   const sys = `Você faz pixel art 16x16 para a tela de um robozinho. Desenhe: ${tema}.
-Use SÓ estas letras de cor: ${Object.entries(NOME_COR).map(([k, v]) => `${k}=${v}`).join(', ')}; e "." para o fundo transparente. Um contorno com "k" fica bonito. Centralize o desenho.
+Use SÓ estas letras de cor: ${Object.entries(NOME_COR).map(([k, v]) => `${k}=${v}`).join(', ')}; e "." para o fundo transparente.
+Dicas: formas grandes e simples que ocupem quase toda a grade, contorno com "k", olhos de 1 ou 2 pixels, poucas cores. Exemplo (um coração):
+["................","..kkkk....kkkk..",".krrrrk..krrrrk.","krrwrrrkkrrrrrrk","krwrrrrrrrrrrrrk","krrrrrrrrrrrrrrk","krrrrrrrrrrrrrrk",".krrrrrrrrrrrrk.","..krrrrrrrrrrk..","...krrrrrrrrk...","....krrrrrrk....",".....krrrrk.....","......krrk......",".......kk.......","................","................"]
 Responda SÓ JSON: {"titulo": "nome curto", "linhas": [exatamente 16 textos, cada um com exatamente 16 caracteres]}`
   try {
     const r = await pedirJSON([{ role: 'system', content: sys }, { role: 'user', content: 'Desenhe agora.' }], 'desenho', null, { temperature: 0.8 }, 'conversa')
