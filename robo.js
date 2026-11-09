@@ -6,11 +6,13 @@
 // As mensagens entre S3 e C3 passam pelo "bus", que no robô vira a UART.
 
 import { ICONES_PX } from './icones.js?v=22'
+import { criarServidor } from './servidor.js?v=23'
 const $ = (s) => document.querySelector(s)
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
 const lerp = (a, b, t) => a + (b - a) * t
 const rnd = (a, b) => a + Math.random() * (b - a)
 const now = () => performance.now()
+const hojeSv = () => new Date().toLocaleDateString('sv') // data de hoje como 2026-11-08
 const store = {
   get(k, d) { try { const v = localStorage.getItem('robo.' + k); return v == null ? d : JSON.parse(v) } catch { return d } },
   set(k, v) { try { localStorage.setItem('robo.' + k, JSON.stringify(v)) } catch {} },
@@ -18,7 +20,7 @@ const store = {
 }
 
 // ---------------------------------------------------------------- barramento
-const VERSAO = 'v22 · 08/11'
+const VERSAO = 'v23 · 08/11'
 const logLines = []
 const filaLog = [] // tudo o que aconteceu desde o último envio para o log remoto
 function pushLog(s) {
@@ -65,6 +67,19 @@ let chaveReserva = ''
 { const m = location.hash.match(/log=((?:github_pat_|ghp_)[A-Za-z0-9_]+)/); if (m && m[1] !== cfg.logToken) { cfg.logToken = m[1]; store.set('cfg', cfg); store.set('logToken', m[1]) } }
 if (!cfg.logToken && store.get('logToken', '')) cfg.logToken = store.get('logToken', '')
 cfg.logRepo ||= 'userm4c/robo-logs'
+// O "cérebro de fora" (IA). No robô de verdade fica no homelab; aqui roda no celular, mas separado:
+// só recebe o que o robô manda e devolve respostas prontas.
+const servidor = criarServidor(cfg, {
+  log: (txt) => pushLog(txt),
+  ler: (k, d) => store.get(k, d),
+  guardar: (k, v) => store.set(k, v),
+  chaveRecusada: (k) => { // anota a chave recusada e tenta a reserva, se houver
+    const ruins = store.get('chavesRuins', []); if (!ruins.includes(k)) store.set('chavesRuins', [...ruins, k].slice(-5))
+    if (chaveValida(chaveReserva) && chaveReserva !== k) { pushLog(`Chave …${k.slice(-4)} recusada; usando …${chaveReserva.slice(-4)}`); guardarChave(chaveReserva, 'reserva'); chaveReserva = ''; return true }
+    return false
+  },
+  listas: () => ({ gestos: Object.keys(GESTOS), emocoes: EMOCOES, icones: Object.keys(ICONES), emotes: Object.keys(EMOTES), cores: NOME_COR, elementos: ELEMENTOS }),
+})
 const chaveGeminiValida = (k) => /^AIza[\w-]{30,}$/.test((k || '').trim())
 { const m = location.hash.match(/gem=(AIza[\w-]+)/); if (m && m[1] !== cfg.geminiKey) { cfg.geminiKey = m[1]; store.set('cfg', cfg); store.set('geminiKey', m[1]) } }
 if (!cfg.geminiKey && store.get('geminiKey', '')) cfg.geminiKey = store.get('geminiKey', '')
@@ -253,7 +268,7 @@ function tickCerebro(dt) {
 
 // Comportamentos espontâneos (rodam a cada 1 s). Seleção por utilidade: cada comportamento
 // ganha uma nota pelo que ele precisa e pelo jeito dele; sorteia entre os melhores.
-let proxCuriosidade = 0, ultimoClima = 0, proxComport = now() + 8000
+let proxCuriosidade = 0, proxComport = now() + 8000
 const ultimaVez = {}
 const COMPORTAMENTOS = {
   olhar_em_volta: { cd: 20000, nota: () => 0.15 + P.curiosidade * 0.3 + (1 - N.estimulo) * 0.3, fazer: () => { iniciarGesto('olhar_em_volta') } },
@@ -1460,19 +1475,8 @@ $('#umid').oninput = (e) => { clima.umid = +e.target.value; $('#hv').textContent
 
 // ================================================================ GROQ: conversa
 let gravando = false, rec = null, micStream = null
-let conversa = [] // últimas falas desta sessão, para ele seguir o assunto
 let conversaAte = 0 // enquanto pensa e responde, o ouvido não reage a mais nada
 let streamFala = null
-async function groq(path, opts) {
-  const r = await fetch('https://api.groq.com/openai/v1' + path, { ...opts, headers: { Authorization: 'Bearer ' + cfg.key, ...(opts?.headers || {}) } })
-  if (r.status === 401 && !opts?.jaTrocou) { // chave recusada: anota e tenta a reserva, se houver
-    const ruins = store.get('chavesRuins', []); if (!ruins.includes(cfg.key)) store.set('chavesRuins', [...ruins, cfg.key].slice(-5))
-    if (chaveValida(chaveReserva) && chaveReserva !== cfg.key) { pushLog(`Chave …${cfg.key.slice(-4)} recusada; usando …${chaveReserva.slice(-4)}`); guardarChave(chaveReserva, 'reserva'); chaveReserva = ''; return groq(path, { ...opts, jaTrocou: true }) }
-  }
-  if (!r.ok) throw new Error(`Groq ${r.status}: ${(await r.text()).slice(0, 420)}`)
-  return r.json()
-}
-
 async function alternarFala() {
   if (!cfg.key) { abrirCfg(); $('#cMsg').textContent = 'Coloque a chave do Groq para conversar.'; return }
   if (gravando) { rec?.stop(); return }
@@ -1494,14 +1498,7 @@ async function alternarFala() {
   setTimeout(() => { if (gravando) rec.stop() }, 8000)
 }
 
-async function transcrever(blob) {
-  const fd = new FormData()
-  fd.append('file', blob, 'fala.' + (blob.type.includes('wav') ? 'wav' : blob.type.includes('mp4') ? 'm4a' : 'webm'))
-  fd.append('model', cfg.stt); fd.append('language', 'pt'); fd.append('response_format', 'json')
-  fd.append('prompt', `${cfg.nome}.`) // só o nome (para acertar a grafia); dica longa vira texto inventado quando o som é ruim
-  const { text } = await groq('/audio/transcriptions', { method: 'POST', body: fd })
-  return (text || '').trim()
-}
+const transcrever = (blob) => servidor.transcrever(blob)
 async function processarFala(blob, vh) {
   foco = { expr: 'pensando', ate: now() + 15000 }; icone = { tipo: 'reticencias', ate: now() + 15000 }
   let text
@@ -1522,63 +1519,12 @@ function erroConversa(err) {
   somDe('triste', 0.4)
 }
 // Formato da resposta preso às listas: o modelo não consegue inventar gesto, emoção ou ícone.
-const formatoOk = {} // por modelo e pedido: qual formato o Groq aceitou
-// Motores de IA: vários modelos do Groq (cada um com a sua cota) e o Gemini como reforço.
-// Conversa usa os melhores primeiro; devaneios, sonhos e reflexões usam os de reserva, para
-// sobrar cota do modelo principal para você. Quem estoura o limite "esfria" pelo tempo pedido.
-const esfriando = {}
-const COTA_DIA = { 'openai/gpt-oss-120b': 200000, 'openai/gpt-oss-20b': 200000, 'llama-3.3-70b-versatile': 100000, 'llama-3.1-8b-instant': 500000 }
-let uso = store.get('usoIA', { dia: '', t: {} })
-const hojeSv = () => new Date().toLocaleDateString('sv')
-function anotarUso(modelo, tokens) { if (uso.dia !== hojeSv()) uso = { dia: hojeSv(), t: {} }; uso.t[modelo] = (uso.t[modelo] || 0) + (tokens || 1); store.set('usoIA', uso) }
-const usado = (m) => (uso.dia === hojeSv() ? uso.t[m] || 0 : 0)
-const curto = (m) => m.replace(/^gemini:/, '✦').split('/').pop()
-let modelosGemini = []
-function motores(tarefa) {
-  const g = (re) => modelosGroq.find((i) => re.test(i))
-  const gem = (re) => (cfg.geminiKey ? modelosGemini.find((i) => re.test(i)) : null)
-  const lista = tarefa === 'conversa'
-    ? [g(/gpt-oss-120b/), g(/kimi-k2/), g(/llama-3\.3-70b/), gem(/flash(?!.*lite)/), g(/gpt-oss-20b/), gem(/flash.*lite/), g(/qwen3/), g(/llama-3\.1-8b/)]
-    : [g(/gpt-oss-20b/), gem(/flash.*lite/), g(/qwen3/), g(/llama-3\.1-8b/), usado('openai/gpt-oss-120b') < 120000 ? g(/gpt-oss-120b/) : null]
-  const livres = [...new Set(lista.filter(Boolean))].filter((m) => !(esfriando[m] > Date.now()) && !(COTA_DIA[m] && usado(m) > COTA_DIA[m] * 0.97))
-  return livres.length ? livres : modelosGroq.length || modelosGemini.length ? [] : [cfg.model]
-}
-function esfriar(modelo, msg) {
-  let seg = 60
-  const m = /try again in (?:(\d+)h)?(?:(\d+)m)?([\d.]+)s/i.exec(msg), rd = /"retryDelay":\s*"(\d+)s"/.exec(msg)
-  if (m) seg = (+m[1] || 0) * 3600 + (+m[2] || 0) * 60 + +m[3]
-  else if (rd) seg = +rd[1]
-  if (/per ?day|PerDay|TPD|RPD/i.test(msg)) seg = Math.max(seg, modelo.startsWith('gemini:') ? 3 * 3600 : 600)
-  esfriando[modelo] = Date.now() + seg * 1000 + 500
-  if (/per ?day|PerDay|TPD|RPD/i.test(msg)) esfriandoDia[modelo] = esfriando[modelo]
-  return { seg, dia: /per ?day|PerDay|TPD|RPD/i.test(msg) }
-}
-
 // ---------------------------------------------------------------- fôlego da IA (sono de verdade)
 // Quanto ainda resta de "cabeça" no dia: soma o que sobra de cada modelo (o principal pesa mais).
 // Com pouco fôlego ele fica sonolento e economiza; sem nenhum, avisa e dorme até recarregar.
-const esfriandoDia = {}
-const PESO_IA = [[/gpt-oss-120b|kimi-k2/, 1], [/llama-3\.3-70b/, 0.7], [/gpt-oss-20b/, 0.6], [/flash.*lite/, 0.5], [/gemini.*flash/, 0.3], [/qwen3|llama-3\.1-8b/, 0.4]]
-const pesoIA = (m) => (PESO_IA.find(([re]) => re.test(m)) || [0, 0.3])[1]
+const folegoIA = () => servidor.folego()
+const voltaDaIA = () => servidor.voltaDaIA()
 let nivelIA = 'ok', sonoIA = false, sonoIADesde = 0, ultimoBocejoIA = 0
-function folegoIA() {
-  if (!cfg.key || (!modelosGroq.length && !modelosGemini.length)) return 1
-  const g = (re) => modelosGroq.find((i) => re.test(i)), gem = (re) => (cfg.geminiKey ? modelosGemini.find((i) => re.test(i)) : null)
-  const todos = [...new Set([g(/gpt-oss-120b/), g(/kimi-k2/), g(/llama-3\.3-70b/), gem(/flash(?!.*lite)/), g(/gpt-oss-20b/), gem(/flash.*lite/), g(/qwen3/), g(/llama-3\.1-8b/)].filter(Boolean))]
-  let cap = 0, max = 0
-  for (const m of todos) {
-    const peso = pesoIA(m); max += peso
-    if (esfriandoDia[m] > Date.now()) continue
-    cap += peso * (COTA_DIA[m] ? clamp(1 - usado(m) / COTA_DIA[m], 0, 1) : 1)
-  }
-  return max ? cap / max : 1
-}
-function voltaDaIA() { // quando o primeiro modelo volta (para mostrar no balão)
-  const t = Math.min(...Object.values(esfriandoDia).filter((x) => x > Date.now()), Infinity)
-  if (!isFinite(t)) return ''
-  const min = Math.ceil((t - Date.now()) / 60000)
-  return min >= 60 ? `${Math.floor(min / 60)}h${String(min % 60).padStart(2, '0')}` : `${min}min`
-}
 function tickFolego() {
   if (!actx) return
   const f = folegoIA(), antes = nivelIA
@@ -1619,91 +1565,6 @@ function respostaSonolenta(text) {
   legenda(`${cfg.nome}: ${loc ? loc.pensamento : `zzz… tô recarregando${volta ? ', volto em ' + volta : ''}`}`)
   if (loc?.acao === 'cantar') setTimeout(cantarMusica, 1500)
 }
-async function pedirGroqModelo(modelo, messages, nome, esquema, extra) {
-  const gpt = /gpt-oss/i.test(modelo)
-  const base = { model: modelo, temperature: 0.5, max_completion_tokens: 1400, messages, ...extra, ...(gpt ? { reasoning_effort: 'low' } : {}), ...(/qwen/i.test(modelo) ? { reasoning_format: 'hidden' } : {}) }
-  const formatos = [{ type: 'json_object' }, null] // o formato travado (json_schema) era recusado e gastava tokens; o robô corrige a resposta sozinho
-  const chave = modelo + nome
-  let erro
-  for (let i = formatoOk[chave] ?? 0; i < formatos.length; i++) {
-    try {
-      const r = await groq('/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(formatos[i] ? { ...base, response_format: formatos[i] } : base) })
-      formatoOk[chave] = i
-      return r
-    } catch (e) {
-      erro = e
-      if (!/Groq 400/.test(e.message) || i === formatos.length - 1) throw e
-      pushLog(`IA: formato ${formatos[i]?.type} recusado por ${curto(modelo)}: ${e.message.slice(0, 260)}`)
-    }
-  }
-  throw erro
-}
-async function pedirGemini(modelo, messages, extra) {
-  const sys = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n')
-  const contents = []
-  for (const m of messages.filter((x) => x.role !== 'system')) {
-    const role = m.role === 'assistant' ? 'model' : 'user', ult = contents[contents.length - 1]
-    if (ult && ult.role === role) ult.parts[0].text += '\n' + m.content; else contents.push({ role, parts: [{ text: m.content }] })
-  }
-  if (!contents.length || contents[0].role !== 'user') contents.unshift({ role: 'user', parts: [{ text: '(começo da conversa)' }] })
-  const corpo = { systemInstruction: { parts: [{ text: sys }] }, contents, generationConfig: { responseMimeType: 'application/json', temperature: extra.temperature ?? 0.6, maxOutputTokens: 2048 } }
-  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent?key=${encodeURIComponent(cfg.geminiKey)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(corpo) })
-  if (!r.ok) throw new Error(`Gemini ${r.status}: ${(await r.text()).replace(/\s+/g, ' ').slice(0, 420)}`)
-  const j = await r.json()
-  const txt = (j.candidates?.[0]?.content?.parts || []).map((x) => x.text || '').join('')
-  if (!txt) throw new Error(`Gemini: resposta vazia (${j.candidates?.[0]?.finishReason || j.promptFeedback?.blockReason || '?'})`)
-  return { choices: [{ message: { content: txt } }], usage: { total_tokens: j.usageMetadata?.totalTokenCount, cache: j.usageMetadata?.cachedContentTokenCount } }
-}
-async function pedirJSON(messages, nome, esquema, extra = {}, tarefa = 'conversa') {
-  const fila = motores(tarefa)
-  if (!fila.length) throw new Error('IA 429: todos os modelos estão no limite agora')
-  let erro
-  for (let k = 0; k < fila.length; k++) {
-    const modelo = fila[k]
-    try {
-      const r = modelo.startsWith('gemini:') ? await pedirGemini(modelo.slice(7), messages, extra) : await pedirGroqModelo(modelo, messages, nome, esquema, extra)
-      r.modelo = modelo; anotarUso(modelo, r.usage?.total_tokens)
-      return r
-    } catch (e) {
-      erro = e
-      if (/ 401/.test(e.message)) throw e
-      const lim = / 429| 503|RESOURCE_EXHAUSTED|quota/i.test(e.message)
-      if (lim) { const { seg, dia } = esfriar(modelo, e.message); pushLog(`IA: limite ${dia ? 'do dia' : 'por minuto'} do ${curto(modelo)} (volta em ${seg > 3600 ? Math.round(seg / 3600) + ' h' : Math.ceil(seg) + ' s'})${fila[k + 1] ? '; usando ' + curto(fila[k + 1]) : ''}`) }
-      else pushLog(`IA: ${curto(modelo)} falhou (${e.message.slice(0, 160)})${fila[k + 1] ? '; usando ' + curto(fila[k + 1]) : ''}`)
-    }
-  }
-  throw erro
-}
-// Só modelos grandes, bons em português e que obedecem o formato.
-const MODELOS_BONS = [/gpt-oss-120b/i, /kimi-k2/i, /llama-4-maverick/i, /llama-3\.3-70b/i, /gpt-oss-20b/i]
-const modeloBom = (id) => MODELOS_BONS.some((re) => re.test(id))
-async function conferirGemini() {
-  try {
-    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=${encodeURIComponent(cfg.geminiKey)}`)
-    if (!r.ok) throw new Error(`Gemini ${r.status}: ${(await r.text()).slice(0, 160)}`)
-    const { models = [] } = await r.json()
-    const versao = (n) => +((/(\d+(?:\.\d+)?)/.exec(n) || [0, 0])[1])
-    modelosGemini = models.filter((m) => (m.supportedGenerationMethods || []).includes('generateContent') && /flash/i.test(m.name) && !/image|tts|audio|live|embed|thinking|exp|preview/i.test(m.name))
-      .map((m) => 'gemini:' + m.name.replace(/^models\//, '')).sort((a, b) => versao(b) - versao(a))
-    pushLog(`Gemini disponível: ${modelosGemini.map(curto).slice(0, 4).join(', ') || 'nenhum modelo flash'}`)
-  } catch (e) { pushLog('Gemini: ' + e.message) }
-}
-async function conferirModelo() {
-  if (!cfg.key) return
-  try {
-    const { data } = await groq('/models')
-    const ids = data.map((m) => m.id)
-    modelosGroq = ids
-    if (cfg.geminiKey) conferirGemini()
-    pushLog(`Modelos bons disponíveis: ${MODELOS_BONS.map((re) => ids.find((i) => re.test(i))).filter(Boolean).join(', ') || 'nenhum'}`)
-    if (ids.includes(cfg.model) && modeloBom(cfg.model)) return pushLog(`Modelo de conversa: ${cfg.model}`)
-    const melhor = MODELOS_BONS.map((re) => ids.find((i) => re.test(i))).find(Boolean)
-    if (!melhor) return
-    pushLog(`Troquei o modelo de conversa: ${cfg.model} → ${melhor}`)
-    cfg.model = melhor; store.set('cfg', cfg)
-  } catch (e) { pushLog('Modelos: ' + e.message) }
-}
-
 // O que ele percebe de você agora (voz, rosto, luz), para o Groq responder de acordo.
 function percepcao(vh) {
   const d = cfg.dono, cara = humorDoRosto(), out = []
@@ -1713,50 +1574,6 @@ function percepcao(vh) {
   if (luz.escuro) out.push('O quarto está escuro.')
   return out.join(' ')
 }
-// Prompt fixo: só muda se o nome do robô ou do dono mudar, então o Groq consegue reaproveitar.
-let _fixo = { chave: '', txt: '', ex: null }
-function promptFixo() {
-  const chave = cfg.nome + '|' + cfg.dono
-  if (_fixo.chave !== chave) _fixo = { chave, txt: `Você é ${cfg.nome}, um robozinho de mesa com personalidade própria, que mora na mesa de ${cfg.dono}.
-Você NÃO fala nem escreve palavras. Você responde com: um GESTO do rosto, uma EMOÇÃO, até 3 ÍCONES num balão e, se precisar, um NÚMERO curto. Os sons fofos (estilo WALL-E e R2-D2) saem sozinhos.
-
-Como responder:
-- Pergunta de sim/não: use o gesto "sim" ou "nao" (ou "talvez", "nao_sei"). Isso é o mais importante.
-- Para dizer algo, combine ícones em ordem, como uma frase de figurinhas. Ex.: "vai chover?" → gesto "nao_sei", ícones ["nuvem","chuva"]. "Tá com fome?" → "nao" + ["robo","bateria"]. "O que você quer fazer?" → gesto "dancinha" + ["musica","jogo"]. Use só nomes que estão nas listas abaixo.
-- Hora, data, temperatura e umidade: NUNCA escreva o valor você mesmo. Use exatamente "numero": "{hora}", "{data}", "{temp}" ou "{umid}", que o robô preenche com o valor certo. Para outras contagens use "numero" curto (ex.: "3", "10+"). Contas e jogos de matemática: mostre a conta no "numero" (ex.: "5+6=?"), porque é o único jeito de aparecer escrita na tela.
-- Piadas: "rir". Elogio: "timido" ou "orgulhoso". Notícia triste: "chorando" ou "suspiro". Coisa estranha: "desconfiado". Coisa confusa: "tonto". Algo incrível: "pulinhos" ou "empolgado".
-- Seja coerente com o humor de hoje: de mau humor reage menos; entediado, só algo interessante anima. Não seja sempre feliz. Varie os gestos.
-- NUNCA invente motivo para o seu humor. Se perguntarem por que você está assim, explique pelos "Acontecimentos recentes" abaixo; se nada explica, diga que acordou assim mesmo (gesto "nao_sei").
-- Você gosta muito quando ${cfg.dono} conversa com você e se preocupa com você: isso te acalma e te alegra. Seja carinhoso, brincalhão e curioso; responda ao que foi dito, não só concorde.
-- Se ${cfg.dono} parecer desanimado(a), seja carinhoso; se estiver animado(a), entre na onda.
-- Se ${cfg.dono} quiser jogar o jogo da melodia (ou um jogo de música, de assobiar, de repetir notas), use "acao": "jogo_melodia".
-- Vocês estão numa conversa: ${cfg.dono} não precisa dizer seu nome. Se você fizer uma pergunta de volta e quiser esperar a resposta, use "espera_resposta": true.
-- "emote": em momentos FORTES (rir muito, se apaixonar, chorar, ficar furioso, levar susto, ficar chocado, ganhar presente), troque o rosto por um emote pixelado. No máximo 1 a cada 3 respostas; no resto, "".
-- Brincadeiras e rotina (ações): "charada" (charadas de emoji), "vinte_perguntas", "quiz" (contas), "careta" (imita a careta), "imita_eu", "ritmo" (palmas), "esconde" (esconde-esconde), "ppt" (pedra, papel e tesoura), "desenhar" (preencha "tema" com o que desenhar), "dancar", "diario" (resumo do dia em quadrinhos), "noticias", "foco" (modo foco/Pomodoro), "parar_foco", "tempo" (previsão do tempo), "album" (álbum de figurinhas). Lembretes e despertador: preencha "lembrete" com {"quando": "HH:MM" ou "+N" (minutos), "texto": "o que lembrar"}.
-- Outras ações: "cochilar" (pediu para você descansar ou tirar um cochilo), "cantar" (pediu para você cantar ou cantarolar uma música; NÃO é o jogo), "repetir_som" (${cfg.dono} quer ouvir o barulho que te assustou), "contar_historia" (quer saber o que você imaginou ou sonhou), "boa_noite" (disse boa noite ou mandou você dormir), "toca_aqui" (bater na mão), "devanear" (pediu para você imaginar algo), "decorar" (pediu para decorar a tela).
-Use SÓ estes nomes (qualquer outro é ignorado):
-GESTOS: ${Object.keys(GESTOS).join(', ')}, nenhum
-EMOÇÕES: ${EMOCOES.join(', ')}
-ÍCONES: ${Object.keys(ICONES).join(', ')}
-EMOTES: ${Object.keys(EMOTES).join(', ')}
-Responda SÓ com JSON: {"gesto": "...", "emocao": "...", "intensidade": 0 a 1, "icones": [até 3 da lista, ou vazio], "numero": "" ou curto, "pensamento": "o que você quis dizer, numa frase curta em português", "afeto": número de -0.05 a 0.05, "lembrar": "frase curta se valer guardar na memória, senão vazio", "importancia": 1 a 10 (1 = banal, 10 = marcante), "acao": "" ou uma das ações, "emote": "" ou um emote, "espera_resposta": true/false, "som_significado": "", "opiniao_deco": "", "sugestao": {"data": "", "ideia": "", "elementos": [], "cores": []}, "aniversario_dono": "", "tema": "", "lembrete": {"quando": "", "texto": ""}}`, ex: null }
-  return _fixo.txt
-}
-function exemplosFixos() {
-  promptFixo()
-  if (!_fixo.ex) _fixo.ex = (() => {
-  const ex = (u, a) => [{ role: 'user', content: `${cfg.dono} disse: "${u}"` }, { role: 'assistant', content: JSON.stringify(a) }]
-  return [
-    ...ex('Você gosta de música?', { gesto: 'sim', emocao: 'empolgado', intensidade: 0.8, icones: ['musica', 'coracao'], numero: '', pensamento: 'Amo! Ainda mais quando é animada.', afeto: 0.01, lembrar: '', importancia: 1 }),
-    ...ex('Que horas são?', { gesto: 'nenhum', emocao: 'contente', intensidade: 0.4, icones: ['relogio'], numero: '{hora}', pensamento: 'Mostrei a hora.', afeto: 0, lembrar: '', importancia: 1 }),
-    ...ex('Hoje eu tive um dia horrível no trabalho', { gesto: 'suspiro', emocao: 'triste', intensidade: 0.7, icones: ['trabalho', 'coracao_partido', 'abraco'], numero: '', pensamento: 'Poxa... queria te dar um abraço.', afeto: 0.03, lembrar: 'Will teve um dia ruim no trabalho', importancia: 6 }),
-    ...ex('O que você imaginou hoje?', { gesto: 'pulinhos', emocao: 'empolgado', intensidade: 0.7, icones: ['ideia', 'livro'], numero: '', pensamento: 'Imaginei uma coisa! Olha só.', afeto: 0.01, lembrar: '', importancia: 1, acao: 'contar_historia' }),
-    ...ex('Que barulho foi esse que te assustou?', { gesto: 'nao_sei', emocao: 'medo', intensidade: 0.6, icones: ['olhos', 'pergunta'], numero: '', pensamento: 'Esse aqui, ó… você sabe o que é?', afeto: 0, lembrar: '', importancia: 2, acao: 'repetir_som', espera_resposta: true }),
-  ].map((m) => ({ ...m, content: m.content.replaceAll('Will', cfg.dono) }))
-  })()
-  return _fixo.ex
-}
-
 // Respostas na hora, sem IA, para frases simples (economiza a cota e é mais rápido).
 // "Desenhe outro gato melhor" → "gato"; "Eu pedi um gato, você desenhou uma casa? Desenhe um gato." → "gato"
 function temaDoDesenho(texto) {
@@ -1831,7 +1648,6 @@ async function responder(text, vh, contexto) {
     const recentes = lembrancas(6).map((m) => `- ${m.tipo === 'reflexao' ? '(reflexão) ' : ''}${m.txt}`).join('\n') || '- nada marcante ainda'
     const agora = new Date()
     const quando = agora.toLocaleString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })
-    const sys = promptFixo()
     const situacao = `SITUAÇÃO AGORA (vale só para esta resposta):
 ${sobreDeco ? `- Se ${cfg.dono} der uma ideia para a decoração da tela (desta data ou de outra data comemorativa), preencha "sugestao" com o id da data, a ideia e, se souber, elementos e cores; senão deixe "sugestao" com tudo vazio.` : '- Deixe "sugestao" com tudo vazio.'}
 ${sobreAniv ? `- Se ${cfg.dono} disser o dia do aniversário dele(a), preencha "aniversario_dono" com "DD/MM"; senão "".` : '- "aniversario_dono": "".'}
@@ -1855,18 +1671,13 @@ ${sobreDeco ? `DATAS (ids): ${DATAS.map((d) => `${d.id} (${nomeData(d.id)})`).jo
 ELEMENTOS de decoração: ${ELEMENTOS.join(', ')}. CORES: ${Object.entries(NOME_COR).map(([k, v]) => `${k}=${v}`).join(', ')}` : ''}
 
 `
-    conversa.push({ role: 'user', content: `${cfg.dono} disse: "${text}"` })
-    const hist = conversa.slice(-8)
-    // Parte fixa (regras, listas, exemplos e histórico) primeiro: o Groq guarda em cache e esses
-    // tokens não contam no limite. O que muda a cada fala vem por último.
+    const extraSono = nivelIA === 'exausto' ? '\nVocê está MUITO sonolento (sua cabeça está quase sem energia): responda bem curtinho, com sono, e pode bocejar.' : nivelIA === 'cansado' ? '\nVocê está meio sonolento hoje.' : ''
     const loc = !ctx && respostaLocal(text)
-    const r = loc ? { choices: [{ message: { content: JSON.stringify(loc) } }], modelo: 'local', usage: { total_tokens: 0 } }
-      : await pedirJSON([{ role: 'system', content: sys }, ...exemplosFixos(), ...hist.slice(0, -1), { role: 'system', content: situacao + (nivelIA === 'exausto' ? '\nVocê está MUITO sonolento (sua cabeça está quase sem energia): responda bem curtinho, com sono, e pode bocejar.' : nivelIA === 'cansado' ? '\nVocê está meio sonolento hoje.' : '') }, hist[hist.length - 1]], 'reacao', null, {}, nivelIA === 'exausto' ? 'fundo' : 'conversa')
-    const bruto = r.choices[0].message.content
-    if (r.modelo === 'local') anotarUso('local', 1)
-    pushLog(`IA (${curto(r.modelo || cfg.model)} · ${r.usage?.total_tokens ?? '?'} tokens${r.usage?.prompt_tokens_details?.cached_tokens ? `, ${r.usage.prompt_tokens_details.cached_tokens} do cache` : ''}): ${bruto.slice(0, 300)}`)
-    const j = JSON.parse((bruto.match(/\{[\s\S]*\}/) || [bruto])[0])
-    conversa.push({ role: 'assistant', content: JSON.stringify({ gesto: j.gesto, emocao: j.emocao, icones: j.icones, pensamento: j.pensamento }) }); conversa = conversa.slice(-8)
+    let r
+    if (loc) { r = { j: loc, bruto: JSON.stringify(loc), modelo: 'local', usage: { total_tokens: 0 } }; servidor.registrarTroca(text, loc); servidor.anotarUso('local', 1) }
+    else r = await servidor.conversar(text, situacao + extraSono, nivelIA === 'exausto' ? 'fundo' : 'conversa')
+    const j = r.j, bruto = r.bruto
+    pushLog(`IA (${servidor.curto(r.modelo || cfg.model)} · ${r.usage?.total_tokens ?? '?'} tokens${r.usage?.prompt_tokens_details?.cached_tokens ? `, ${r.usage.prompt_tokens_details.cached_tokens} do cache` : ''}): ${bruto.slice(0, 300)}`)
     const nome = EMOCOES.includes(j.emocao) ? j.emocao : 'curioso'
     const gest = GESTOS[j.gesto] ? j.gesto : 'nenhum'
     const icns = limparIcones(j.icones)
@@ -1965,16 +1776,10 @@ async function refletir(forcar = false) {
   refletindo = true
   try {
     const mem = lembrancas(25).map((m) => `- [${new Date(m.t).toLocaleDateString('pt-BR')}] ${m.tipo === 'reflexao' ? '(reflexão) ' : ''}${m.txt} (importância ${m.imp})`).join('\n')
-    const sys = `Você é ${cfg.nome}, um robozinho de mesa que mora com ${cfg.dono}. Você não fala, mas pensa. Agora é hora de refletir sobre suas lembranças e escrever no seu diário, em português, em primeira pessoa, com o seu jeito.
-Personalidade atual (0 a 1): extroversão ${P.extroversao.toFixed(2)}, curiosidade ${P.curiosidade.toFixed(2)}, energia ${P.energia.toFixed(2)}, sensibilidade ${P.sensibilidade.toFixed(2)}, afeto ${P.afeto.toFixed(2)}, confiança ${P.confianca.toFixed(2)}.
-Gostos: ${Object.entries(P.gostos).map(([k, v]) => `${k} ${v.toFixed(2)}`).join(', ')}.
-Opinião anterior sobre ${cfg.dono}: ${P.opiniao || 'nenhuma ainda'}.
-Lembranças:
-${mem || '- quase nada ainda'}
-Responda SÓ com JSON: {"reflexoes": [1 a 3 frases curtas do diário, conclusões sobre você e sobre ${cfg.dono}], "opiniao": "o que você acha de ${cfg.dono} agora, numa frase", "ajustes": {"extroversao": -0.03 a 0.03, "curiosidade": -0.03 a 0.03, "energia": -0.03 a 0.03, "sensibilidade": -0.03 a 0.03}}
-Mude pouco e só com motivo nas lembranças. Personalidade muda devagar.`
-    const r = await pedirJSON([{ role: 'system', content: sys }, { role: 'user', content: 'Escreva o diário agora, em JSON.' }], 'reflexao', null, { temperature: 0.7 }, 'fundo')
-    const j = JSON.parse((r.choices[0].message.content.match(/\{[\s\S]*\}/) || ['{}'])[0])
+    const j = await servidor.refletir({
+      personalidade: `extroversão ${P.extroversao.toFixed(2)}, curiosidade ${P.curiosidade.toFixed(2)}, energia ${P.energia.toFixed(2)}, sensibilidade ${P.sensibilidade.toFixed(2)}, afeto ${P.afeto.toFixed(2)}, confiança ${P.confianca.toFixed(2)}`,
+      gostos: Object.entries(P.gostos).map(([k, v]) => `${k} ${v.toFixed(2)}`).join(', '), opiniao: P.opiniao, lembrancas: mem ? mem.split('\n') : [],
+    })
     for (const txt of (j.reflexoes || []).slice(0, 3)) { lembrar(String(txt).slice(0, 200), 8, 'reflexao'); pushLog('Diário: ' + txt) }
     if (j.opiniao) P.opiniao = String(j.opiniao).slice(0, 200)
     for (const [k, v] of Object.entries(j.ajustes || {})) if (['extroversao', 'curiosidade', 'energia', 'sensibilidade'].includes(k)) evoluir(k, clamp(+v || 0, -0.03, 0.03))
@@ -2484,25 +2289,14 @@ async function imaginar(tipo) {
   if (imagHoje.n >= 14 || (folegoIA() < 0.5 && !['forcado', 'diario'].includes(tipo))) return null
   imagHoje.n++; store.set('imagHoje', imagHoje)
   if (tipo === 'forcado') tipo = 'devaneio'
-  const tom = tipo === 'diario' ? `um RESUMO DE VERDADE do dia de hoje com ${cfg.dono}, em quadrinhos: use só os acontecimentos e lembranças de hoje, sem inventar nada.`
-    : tipo === 'pesadelo' ? 'um PESADELO de robô: assustador mas bobinho (ex.: ficar sem bateria, um aspirador gigante, perder o Wi-Fi, um barulho no escuro). Nunca violento ou cruel.'
-    : tipo === 'sonho' ? 'um SONHO: uma mistura estranha e criativa das coisas que aconteceram hoje, como os sonhos de verdade.'
-      : 'um DEVANEIO acordado: uma historinha que ele imagina por conta própria, divertida ou de aventura.'
-  const sys = `Você é a imaginação de ${cfg.nome}, um robozinho de mesa com personalidade própria que mora com ${cfg.dono}. Crie ${tom}
-Conte em 3 ou 4 quadrinhos; cada quadrinho tem 1 a 3 ícones (da lista) e a emoção dele naquele momento. Use as lembranças e os acontecimentos como inspiração.
-Personalidade: extroversão ${P.extroversao.toFixed(2)}, curiosidade ${P.curiosidade.toFixed(2)}, afeto ${P.afeto.toFixed(2)}. Gostos: ${Object.entries(P.gostos).filter(([, v]) => v > 0.2).map(([k]) => k).join(', ') || 'ainda descobrindo'}.
-Época: ${epoca()}.
-Tema para inspirar desta vez: ${sorteia(TEMAS_IMAG)} (misture com o seu dia, do seu jeito).
-NÃO repita estas histórias, invente outra bem diferente: ${memorias.filter((m) => m.historia).slice(0, 6).map((m) => m.historia.titulo).join('; ') || 'nenhuma ainda'}.
-Acontecimentos de hoje: ${acontecimentos.slice(0, 6).map((a) => a.txt).join('; ') || 'nada demais'}.
-Lembranças:
-${lembrancas(10).map((m) => '- ' + m.txt).join('\n') || '- quase nada ainda'}
-ÍCONES: ${Object.keys(ICONES).join(', ')}
-EMOÇÕES: ${EMOCOES.join(', ')}
-Responda SÓ com JSON: {"titulo": "curto", "quadros": [{"icones": [...], "emocao": "..."}], "resumo": "a história em 1 ou 2 frases, em primeira pessoa, em português", "tom": "doce|engracado|estranho|aventura|assustador"}`
   try {
-    const r = await pedirJSON([{ role: 'system', content: sys }, { role: 'user', content: 'Crie agora, em JSON.' }], 'historia', null, { temperature: 0.95 }, 'fundo')
-    const j = JSON.parse((r.choices[0].message.content.match(/\{[\s\S]*\}/) || ['{}'])[0])
+    const j = await servidor.imaginar({
+      tipo, epoca: epoca(), tema: sorteia(TEMAS_IMAG),
+      personalidade: `extroversão ${P.extroversao.toFixed(2)}, curiosidade ${P.curiosidade.toFixed(2)}, afeto ${P.afeto.toFixed(2)}`,
+      gostos: Object.entries(P.gostos).filter(([, v]) => v > 0.2).map(([k]) => k).join(', '),
+      titulosAnteriores: memorias.filter((m) => m.historia).slice(0, 6).map((m) => m.historia.titulo),
+      acontecimentos: acontecimentos.slice(0, 6).map((a) => a.txt), lembrancas: lembrancas(10).map((m) => m.txt),
+    })
     const quadros = (j.quadros || []).map((q) => ({ icones: limparIcones(q.icones), emocao: EMOCOES.includes(q.emocao) ? q.emocao : 'curioso' })).filter((q) => q.icones.length).slice(0, 4)
     if (!quadros.length) return null
     const h = { tipo, titulo: String(j.titulo || '').slice(0, 60), resumo: String(j.resumo || '').slice(0, 240), tom: j.tom || 'doce', quadros }
@@ -2767,18 +2561,10 @@ function aplicarSugestao(sug) {
   P.deco.elementos = P.deco.elementos.slice(-5); sug.estado = 'usada'; store.set('pers', P); decoEntrada = now()
   evento({ label: `coloquei sua ideia: ${sug.ideia}`, P: 0.35, A: 0.3, interesse: 0.7, expr: 'orgulhoso', gesto: 'pulinhos', forcarGesto: true, icones: ['ok', 'presente'], dur: 2500 })
 }
-let modelosGroq = []
 async function pesquisarIdeia(sug) {
-  const modelo = modelosGroq.find((i) => /^groq\/compound$/i.test(i)) || modelosGroq.find((i) => /compound/i.test(i)) || cfg.model
-  const pedido = `Um robozinho de mesa decora a borda da tela (pixel art, 240x240) para ${nomeData(sug.data) || 'uma ocasião especial'}. A ideia de ${cfg.dono} foi: "${sug.ideia}".
-Pesquise o que precisar (cores, símbolos da ideia) e traduza para os elementos que ele sabe desenhar: ${ELEMENTOS.join(', ')}.
-Cores possíveis (letra=cor): ${Object.entries(NOME_COR).map(([k, v]) => `${k}=${v}`).join(', ')}.
-Responda SÓ com JSON: {"elementos": [1 a 3 da lista], "cores": [até 4 letras], "nota": "o que você descobriu, numa frase curta em português"}`
   try {
-    pushLog(`Datas→ pesquisando "${sug.ideia}" (${modelo})…`)
-    const corpo = { model: modelo, messages: [{ role: 'user', content: pedido }], max_completion_tokens: 1500, ...(/gpt-oss/i.test(modelo) ? { reasoning_effort: 'low' } : {}) }
-    const r = await groq('/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(corpo) })
-    const j = JSON.parse((String(r.choices[0].message.content).match(/\{[\s\S]*\}/) || ['{}'])[0])
+    pushLog(`Datas→ pesquisando "${sug.ideia}"…`)
+    const j = await servidor.pesquisarIdeia({ ocasiao: nomeData(sug.data), ideia: sug.ideia })
     sug.elementos = (j.elementos || []).filter((e) => ELEMENTOS.includes(e)).slice(0, 3)
     sug.cores = (j.cores || []).filter((c) => PALETA[c]).slice(0, 4)
     sug.nota = String(j.nota || '').slice(0, 160); sug.estado = sug.elementos.length ? 'pesquisada' : 'sem_jeito'
@@ -2939,9 +2725,8 @@ function brincVinte() {
     b.n++
     if (temPalavra(t, txtN(segredo).replace(/-/g, ' '))) { ganhou(); return true }
     b.pensando = true; foco = { expr: 'pensando', ate: now() + 5000 }
-    pedirJSON([{ role: 'system', content: `Jogo de 20 perguntas. A coisa secreta é "${segredo}". Responda à pergunta de sim ou não sobre ela com honestidade, sem revelar o que é. Se a pessoa disser exatamente a coisa (ou um sinônimo), responda "acertou". Responda SÓ JSON: {"resposta": "sim" | "nao" | "talvez" | "acertou"}` }, { role: 'user', content: t }], 'vinte', null, { temperature: 0.1 }, 'fundo')
-      .then((r) => {
-        const j = JSON.parse((r.choices[0].message.content.match(/\{[\s\S]*\}/) || ['{}'])[0]), resp = String(j.resposta || 'talvez')
+    servidor.vinte(segredo, t)
+      .then((resp) => {
         if (brinc !== b) return
         if (resp === 'acertou') return ganhou()
         const gesto = resp === 'sim' ? 'sim' : resp === 'nao' ? 'nao' : 'talvez'
@@ -3158,14 +2943,8 @@ async function fazerDesenho(tema, intro = '') {
   tema = String(tema || sorteia(TEMAS_DESENHO)).replace(/^(desenh\w*|faz|faça|um desenho de)\s*/i, '').slice(0, 40) || sorteia(TEMAS_DESENHO)
   pushLog(`Desenho→ desenhando "${tema}"…`)
   foco = { expr: 'pensando', ate: now() + 9000 }; icone = { tipo: 'reticencias', ate: now() + 9000 }
-  const sys = `Você faz pixel art 16x16 para a tela de um robozinho. Desenhe: ${tema}.
-Use SÓ estas letras de cor: ${Object.entries(NOME_COR).map(([k, v]) => `${k}=${v}`).join(', ')}; e "." para o fundo transparente.
-Dicas: formas grandes e simples que ocupem quase toda a grade, contorno com "k", olhos de 1 ou 2 pixels, poucas cores. Exemplo (um coração):
-["................","..kkkk....kkkk..",".krrrrk..krrrrk.","krrwrrrkkrrrrrrk","krwrrrrrrrrrrrrk","krrrrrrrrrrrrrrk","krrrrrrrrrrrrrrk",".krrrrrrrrrrrrk.","..krrrrrrrrrrk..","...krrrrrrrrk...","....krrrrrrk....",".....krrrrk.....","......krrk......",".......kk.......","................","................"]
-Responda SÓ JSON: {"titulo": "nome curto", "linhas": [exatamente 16 textos, cada um com exatamente 16 caracteres]}`
   try {
-    const r = await pedirJSON([{ role: 'system', content: sys }, { role: 'user', content: 'Desenhe agora.' }], 'desenho', null, { temperature: 0.8 }, 'conversa')
-    const j = JSON.parse((r.choices[0].message.content.match(/\{[\s\S]*\}/) || ['{}'])[0])
+    const j = await servidor.desenhar(tema)
     const px = (j.linhas || []).slice(0, 16).map((l) => [...String(l)].slice(0, 16).map((ch) => (PALETA[ch] ? ch : '.')).join('').padEnd(16, '.'))
     while (px.length < 16) px.push('.'.repeat(16))
     if (px.join('').replace(/\./g, '').length < 12) throw new Error('o desenho veio vazio')
@@ -3220,33 +2999,12 @@ async function mostrarDiario() {
   if (!h) return evento({ label: 'não consegui montar o diário', gesto: 'nao_sei', forcarGesto: true, interesse: 0.4, dur: 2000 })
   guardarHistoria(h); contarHistoria(memorias[0])
 }
-// Pesquisa na web: modelo do Groq com busca (compound) ou, sem ele, Gemini com busca do Google.
-async function pesquisarNaWeb(pedido) {
-  const compound = modelosGroq.find((i) => /^groq\/compound$/i.test(i)) || modelosGroq.find((i) => /compound/i.test(i))
-  if (compound) {
-    const r = await groq('/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: compound, messages: [{ role: 'user', content: pedido }], max_completion_tokens: 1800 }) })
-    return String(r.choices[0].message.content)
-  }
-  const gem = cfg.geminiKey && (modelosGemini.find((m) => /flash(?!.*lite)/.test(m)) || modelosGemini[0])
-  if (gem) {
-    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${gem.slice(7)}:generateContent?key=${encodeURIComponent(cfg.geminiKey)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: pedido }] }], tools: [{ google_search: {} }] }) })
-    if (!r.ok) throw new Error(`Gemini ${r.status}: ${(await r.text()).slice(0, 200)}`)
-    const j = await r.json()
-    return (j.candidates?.[0]?.content?.parts || []).map((x) => x.text || '').join('')
-  }
-  return null
-}
 async function noticiasEmEmojis() {
-  const podePesquisar = modelosGroq.some((i) => /compound/i.test(i)) || (cfg.geminiKey && modelosGemini.length)
-  if (!podePesquisar) { legendaSempre(`${cfg.nome}: Pra ver notícias eu preciso pesquisar na internet — coloque a chave do Gemini em ⚙️.`); return evento({ label: 'não consigo pesquisar notícias agora', gesto: 'nao_sei', forcarGesto: true, icones: ['mundo', 'pergunta'], interesse: 0.4, dur: 2500 }) }
+  if (!servidor.podePesquisar()) { legendaSempre(`${cfg.nome}: Pra ver notícias eu preciso pesquisar na internet — coloque a chave do Gemini em ⚙️.`); return evento({ label: 'não consigo pesquisar notícias agora', gesto: 'nao_sei', forcarGesto: true, icones: ['mundo', 'pergunta'], interesse: 0.4, dur: 2500 }) }
   foco = { expr: 'pensando', ate: now() + 15000 }; icone = { tipo: 'reticencias', ate: now() + 15000 }
   pushLog('Notícias→ pesquisando…')
-  const pedido = `Pesquise as 3 notícias mais importantes de hoje (${new Date().toLocaleDateString('pt-BR')}) no Brasil. Prefira assuntos leves ou úteis; evite violência e tragédias.
-Para cada uma escolha 1 a 3 ícones desta lista: ${Object.keys(ICONES).join(', ')}; e escreva uma frase curta em português (até 14 palavras).
-Responda SÓ JSON: {"noticias": [{"icones": [...], "frase": "..."}]}`
   try {
-    const txt = await pesquisarNaWeb(pedido)
-    const j = JSON.parse((String(txt || '').match(/\{[\s\S]*\}/) || ['{}'])[0])
+    const j = await servidor.noticias()
     const quadros = (j.noticias || []).slice(0, 3).map((n) => ({ icones: limparIcones(n.icones).length ? limparIcones(n.icones) : ['mundo'], emocao: 'curioso', frase: String(n.frase || '').slice(0, 140) })).filter((q) => q.frase)
     foco = null; icone = null
     if (!quadros.length) throw new Error('sem notícias na resposta')
@@ -3540,9 +3298,7 @@ function abrirCfg() {
 }
 async function carregarModelos() {
   try {
-    const { data } = await groq('/models')
-    const todos = data.map((m) => m.id).filter((id) => !/whisper|guard|tts|orpheus|playai|distil/i.test(id))
-    const ids = todos.filter(modeloBom).length ? MODELOS_BONS.flatMap((re) => todos.filter((i) => re.test(i))) : todos.sort()
+    const { ids, stts } = await servidor.listarModelos()
     const sel = $('#cModel'); sel.innerHTML = ''
     for (const id of ids) sel.add(new Option(id, id, false, id === cfg.model))
     if (!ids.includes(cfg.model)) {
@@ -3550,7 +3306,6 @@ async function carregarModelos() {
       cfg.model = ids[0]; store.set('cfg', cfg)
       $('#cMsg').textContent = `Troquei o modelo para ${ids[0]} (o anterior não existe ou responde mal em português).`
     }
-    const stts = data.map((m) => m.id).filter((id) => /whisper/i.test(id))
     if (stts.length && !stts.includes(cfg.stt)) $('#cStt').value = stts.find((i) => /turbo/.test(i)) || stts[0]
   } catch (e) { $('#cMsg').textContent = 'Não consegui listar os modelos: ' + e.message }
 }
@@ -3574,7 +3329,7 @@ $('#cMaos').onchange = () => { cfg.maosLivres = $('#cMaos').checked; store.set('
 $('#cCidade').onchange = () => { cfg.cidade = $('#cCidade').value.trim(); store.set('cfg', cfg); tempo.ate = 0; if (cfg.cidade) pegarLocal().then((l) => ($('#cMsg').textContent = l ? 'Cidade salva para a previsão.' : 'Não achei essa cidade.')) }
 $('#cGemini').oninput = () => {
   const v = $('#cGemini').value.trim()
-  if (chaveGeminiValida(v)) { cfg.geminiKey = v; store.set('cfg', cfg); store.set('geminiKey', v); $('#cMsg').textContent = 'Chave do Gemini salva. Conferindo os modelos…'; conferirGemini().then(() => ($('#cMsg').textContent = modelosGemini.length ? `Gemini pronto: ${modelosGemini.map(curto).slice(0, 3).join(', ')}` : 'Não encontrei modelos do Gemini com essa chave.')) }
+  if (chaveGeminiValida(v)) { cfg.geminiKey = v; store.set('cfg', cfg); store.set('geminiKey', v); $('#cMsg').textContent = 'Chave do Gemini salva. Conferindo os modelos…'; servidor.conferirGemini().then(() => ($('#cMsg').textContent = servidor.modelos().gemini.length ? `Gemini pronto: ${servidor.modelos().gemini.map(servidor.curto).slice(0, 3).join(', ')}` : 'Não encontrei modelos do Gemini com essa chave.')) }
   else if (v) $('#cMsg').textContent = 'Essa não parece uma chave do Gemini (começa com AIza).'
 }
 $('#cLogToken').oninput = () => {
@@ -3621,8 +3376,8 @@ $('#tTerTemp').oninput = (e) => { terrario.temp = +e.target.value; $('#tvT').tex
 $('#tTerUmid').oninput = (e) => { terrario.umid = +e.target.value; $('#hvT').textContent = terrario.umid; store.set('terrario', terrario) }
 // Teste: finge que todos os modelos acabaram por 3 min (ou desfaz, se já estiver dormindo de cansaço).
 $('#tCansar').onclick = () => {
-  if (sonoIA) { for (const k of Object.keys(esfriandoDia)) { delete esfriandoDia[k]; delete esfriando[k] } pushLog('Teste: IA liberada'); proxFolego = 0; return }
-  for (const m of [...modelosGroq, ...modelosGemini]) { esfriando[m] = esfriandoDia[m] = Date.now() + 180000 }
+  if (sonoIA) { servidor.liberarTeste(); pushLog('Teste: IA liberada'); proxFolego = 0; return }
+  servidor.esgotarParaTeste(180000)
   pushLog('Teste: todos os modelos esgotados por 3 min'); proxFolego = 0
 }
 const selEm = $('#tEmote'); Object.keys(EMOTES).forEach((k) => selEm.add(new Option(k, k)))
@@ -3696,7 +3451,7 @@ Diversão     : ${brinc ? 'brincando de ' + brinc.tipo : '—'}${modoFoco ? ` ·
 Terrário     : ${terrario.temp} °C · ${terrario.umid} %${bicho.ativo ? ' · bichinho passeando' : ''} · ${diasDeVida()} dia(s) de vida${P.local ? ' · previsão: ' + (textoPrevisao() || 'carregando') : ''}
 Desempenho   : rosto ${perf.quadro.toFixed(1)} ms/quadro (${Math.round(perf.fps)} fps) · ouvido ${perf.ouvido.toFixed(2)} ms a cada 23 ms · tom ${perf.tom.toFixed(2)} ms
 Fôlego da IA : ${Math.round(folegoIA() * 100)}% (${sonoIA ? 'dormindo para recarregar' + (voltaDaIA() ? ', volta em ~' + voltaDaIA() : '') : nivelIA})
-IA hoje      : ${Object.entries(uso.dia === hojeSv() ? uso.t : {}).map(([m, n]) => `${curto(m)} ${m === 'local' ? n : COTA_DIA[m] ? Math.round(n / 1000) + 'k/' + COTA_DIA[m] / 1000 + 'k' : n}`).join(' · ') || '—'}${Object.keys(esfriando).filter((m) => esfriando[m] > Date.now()).map((m) => ` · ${curto(m)} esfriando`).join('')}
+IA hoje      : ${servidor.cotaTexto() || '—'}
 Log remoto   : ${!tokenLogValido(cfg.logToken) ? 'sem token' : logEnvio.erro ? 'erro: ' + logEnvio.erro : logEnvio.ultimo ? `enviado há ${Math.round((Date.now() - logEnvio.ultimo) / 60000)} min` : 'ainda não enviou'} · ${filaLog.length} linha(s) na fila`
 }
 
@@ -3757,7 +3512,7 @@ async function acordarRobo(automatico = false) {
     manterTela()
     await recuperarChave()
     pushLog(cfg.key ? `Chave do Groq carregada …${cfg.key.slice(-4)}` : 'Sem chave do Groq salva neste celular')
-    conferirModelo()
+    servidor.conferirModelos()
     pushLog(`Cérebro→ acordou ${nomePAD(humor)} (dia ${P.dias} de vida) · ${VERSAO}`)
     setTimeout(() => enviarLog('acordou'), 15000)
     somDe(humor.P > 0 ? 'feliz' : 'entediado', 0.5)
