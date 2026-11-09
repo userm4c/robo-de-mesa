@@ -5,6 +5,7 @@
 //   Cérebro = emoções em 3 camadas (personalidade, humor do dia, emoção) + Groq
 // As mensagens entre S3 e C3 passam pelo "bus", que no robô vira a UART.
 
+import { ICONES_PX } from './icones.js?v=22'
 const $ = (s) => document.querySelector(s)
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
 const lerp = (a, b, t) => a + (b - a) * t
@@ -17,7 +18,7 @@ const store = {
 }
 
 // ---------------------------------------------------------------- barramento
-const VERSAO = 'v21 · 08/11'
+const VERSAO = 'v22 · 08/11'
 const logLines = []
 const filaLog = [] // tudo o que aconteceu desde o último envio para o log remoto
 function pushLog(s) {
@@ -429,6 +430,18 @@ const ICONES = {
   teclado: '⌨️', calculadora: '🧮', ouvido: '👂', sorvete: '🍦', pizza: '🍕', arvore: '🎄', sino: '🔔', vela: '🕯️', termometro: '🌡️', coroa: '👑', sorriso: '😊', praia: '🏖️', luz: '💡', pergunta: '❓', raio: '⚡', bateria: '🔋', wifi: '📶', seta_cima: '⬆️', seta_baixo: '⬇️', mais: '➕', menos: '➖', fantasma: '👻',
 }
 let balao = null // {itens, numero, ate}
+// Ícone em pixel 16x16 (paleta RGB565 de cada ícone). Sem ícone no atlas, cai no emoji do sistema.
+const corPx = {}
+function css565(h) { if (corPx[h]) return corPx[h]; const v = parseInt(h, 16); return (corPx[h] = `rgb(${((v >> 11) & 31) << 3},${((v >> 5) & 63) << 2},${(v & 31) << 3})`) }
+function desenharIconePx(chave, cx, cy, e = 1.6) {
+  const emoji = ICONES[chave] || chave, d = ICONES_PX[emoji]
+  if (!d) { g.save(); g.font = `${Math.round(16 * e)}px sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(emoji, cx, cy); g.restore(); return }
+  const x0 = cx - 8 * e, y0 = cy - 8 * e
+  for (let y = 0; y < 16; y++) {
+    const l = d.l[y]
+    for (let x = 0; x < 16; x++) { const c = l.charCodeAt(x) - 48; if (!c) continue; g.fillStyle = css565(d.p[(c > 9 ? c - 39 : c) - 1]); g.fillRect(x0 + x * e, y0 + y * e, e + 0.35, e + 0.35) }
+  }
+}
 // O modelo às vezes escreve o nome do ícone de outro jeito ("coração", "olho", "som"): aceita.
 const APELIDO_ICONE = { luzes: 'luz', lampada: 'luz', calcula: 'calculadora', camera: 'foto', cameras: 'foto', filmes: 'filme', cansado: 'dormir', sono: 'dormir', olho: 'olhos', som: 'musica', soma: 'mais', codigo: 'computador', aprender: 'cerebro', assobio: 'musica', canto: 'musica', cancao: 'musica', jogar: 'jogo', ideia_brilhante: 'ideia', sol_quente: 'sol', frio: 'neve', amor: 'coracao', feliz: 'sorriso', livros: 'livro', estrela_cadente: 'estrela', arvore_de_natal: 'arvore', natal: 'arvore', comida_gostosa: 'comida' }
 function icone_(x) { const k = String(x || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z_]/g, ''); return ICONES[k] ? k : ICONES[APELIDO_ICONE[k]] ? APELIDO_ICONE[k] : null }
@@ -521,9 +534,8 @@ function desenharBalao(t) {
   if (temNum) {
     g.fillStyle = '#e8f6ff'; g.font = 'bold 24px system-ui, sans-serif'; g.fillText(balao.numero, 120, y + alt / 2 + 1)
   } else {
-    g.font = '26px "Noto Color Emoji", "Apple Color Emoji", "Segoe UI Emoji", sans-serif'
     const mostrados = Math.min(itens.length, 1 + Math.floor(Math.max(0, idade) / 450))
-    for (let i = 0; i < mostrados; i++) g.fillText(itens[i], x + 27 + i * 36, y + alt / 2 + 2 + Math.sin(t / 250 + i) * 1.5)
+    for (let i = 0; i < mostrados; i++) desenharIconePx(itens[i], x + 27 + i * 36, y + alt / 2 + Math.round(Math.sin(t / 250 + i) * 1.5), 1.6)
   }
   g.restore()
 }
@@ -531,8 +543,14 @@ function desenharBalao(t) {
 let tAnterior = now()
 const errosVistos = {}
 function erroUmaVez(onde, e) { const k = onde + ':' + e.message; if (errosVistos[k]) return; errosVistos[k] = 1; pushLog(`ERRO em ${onde}: ${e.message} ${(e.stack || '').split('\n')[1]?.trim() || ''}`); setTimeout(() => enviarLog('erro'), 2000) }
+// Medidor de desempenho (média móvel): quanto custa cada parte. Serve de orçamento para o C3 e o S3.
+const perf = { quadro: 0, fps: 0, ouvido: 0, ultimoQ: 0, tom: 0 }
+const media = (a, b) => (a ? a * 0.95 + b * 0.05 : b)
 function quadro() {
-  try { desenharQuadro() } catch (e) { g = gTela; erroUmaVez('quadro', e) } finally { requestAnimationFrame(quadro) }
+  const a = performance.now()
+  if (perf.ultimoQ) perf.fps = media(perf.fps, 1000 / Math.max(1, a - perf.ultimoQ))
+  perf.ultimoQ = a
+  try { desenharQuadro(); perf.quadro = media(perf.quadro, performance.now() - a) } catch (e) { g = gTela; erroUmaVez('quadro', e) } finally { requestAnimationFrame(quadro) }
 }
 function desenharQuadro() {
   const t = now(), dt = Math.min(0.1, (t - tAnterior) / 1000); tAnterior = t
@@ -626,8 +644,7 @@ function desenharQuadro() {
   desenharBicho(t)
   if (dormindo && sono.rem?.hist) { // o sonho aparece clarinho perto do Zzz
     const q = sono.rem.hist.quadros[Math.floor((t - sono.rem.t0) / 4000) % sono.rem.hist.quadros.length]
-    g.save(); g.globalAlpha = 0.45; g.textAlign = 'center'; g.font = '16px "Noto Color Emoji", "Apple Color Emoji", "Segoe UI Emoji", sans-serif'
-    q.icones.forEach((k, i) => g.fillText(ICONES[k], 170 + i * 20, 84)); g.restore()
+    g.save(); g.globalAlpha = 0.45; q.icones.forEach((k, i) => desenharIconePx(k, 170 + i * 20, 84, 1)); g.restore()
   }
   g.save(); g.globalCompositeOperation = 'destination-over'; desenharCorHumor(); g.fillStyle = '#000'; g.fillRect(0, 0, 240, 240); g.restore() // fundo por trás de tudo
   if (palco) { g = gTela; compor(t) }
@@ -796,7 +813,7 @@ async function ligarOuvido(stream) {
   sr = actx.sampleRate
   tbuf = new Float32Array(an.fftSize); fbuf = new Float32Array(an.frequencyBinCount); prevMag = new Float32Array(an.frequencyBinCount)
   binMax = Math.floor(5000 / (sr / an.fftSize))
-  setInterval(analisar, 23)
+  setInterval(() => { const a = performance.now(); analisar(); perf.ouvido = media(perf.ouvido, performance.now() - a) }, 23)
   setInterval(estimarRitmo, 500)
   ligarEscuta(src)
 }
@@ -1171,6 +1188,14 @@ function analisar() {
 
 // Correlação normalizada (McLeod): acha a frequência de um som com tom.
 function detectarTom(buf, sr) {
+  const ini = performance.now()
+  try {
+    // Metade das amostras (média de pares = filtro passa-baixa simples): ~4x mais rápido, e o tom (até 3,2 kHz) cabe com folga.
+    if (sr > 30000) { const n = buf.length >> 1, meio = detectarTom.buf?.length === n ? detectarTom.buf : (detectarTom.buf = new Float32Array(n)); for (let i = 0; i < n; i++) meio[i] = (buf[2 * i] + buf[2 * i + 1]) * 0.5; return detectarTom_(meio, sr / 2) }
+    return detectarTom_(buf, sr)
+  } finally { perf.tom = media(perf.tom, performance.now() - ini) }
+}
+function detectarTom_(buf, sr) {
   const N = buf.length, minLag = Math.floor(sr / 3200), maxLag = Math.min(Math.floor(sr / 75), N >> 1)
   const nsdf = new Float32Array(maxLag + 2)
   for (let lag = 1; lag <= maxLag; lag++) {
@@ -2553,14 +2578,13 @@ function desenharImaginacao(t) {
     for (const [x, y, r] of [[200, 82, 3], [209, 70, 5]]) { g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill() }
     for (const [x, y, rx, ry] of [[150, 32, 30, 19], [178, 24, 30, 21], [206, 34, 26, 18], [174, 44, 42, 15]]) { g.beginPath(); g.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2); g.fill() }
     g.globalAlpha = 1; g.textAlign = 'center'; g.textBaseline = 'middle'
-    if (q) { g.font = '20px "Noto Color Emoji", "Apple Color Emoji", "Segoe UI Emoji", sans-serif'; q.icones.forEach((k, i) => g.fillText(ICONES[k], 178 + (i - (q.icones.length - 1) / 2) * 25, 33)) }
+    if (q) q.icones.forEach((k, i) => desenharIconePx(k, 178 + (i - (q.icones.length - 1) / 2) * 25, 33, 1.3))
     else { g.fillStyle = '#5b6b7b'; g.font = 'bold 22px system-ui'; g.fillText('.'.repeat(1 + Math.floor(t / 400) % 3), 178, 30) }
   } else if (a.tipo === 'contando' && q && t >= a.t0) {
     const n = a.hist.quadros.length, i = Math.floor((t - a.t0) / (a.hist.passo || 2300))
     g.fillStyle = '#1b2632'; g.strokeStyle = '#7df9ff'; g.lineWidth = 2
     g.beginPath(); g.roundRect(30, 4, 180, 48, 10); g.fill(); g.stroke()
-    g.textAlign = 'center'; g.textBaseline = 'middle'; g.font = '24px "Noto Color Emoji", "Apple Color Emoji", "Segoe UI Emoji", sans-serif'
-    q.icones.forEach((k, j) => g.fillText(ICONES[k], 120 + (j - (q.icones.length - 1) / 2) * 34, 26))
+    q.icones.forEach((k, j) => desenharIconePx(k, 120 + (j - (q.icones.length - 1) / 2) * 34, 26, 1.6))
     for (let j = 0; j < n; j++) { g.fillStyle = j <= i ? '#7df9ff' : '#3a4a5a'; g.fillRect(120 - n * 6 + j * 12, 46, 6, 3) }
   }
   g.restore()
@@ -3670,6 +3694,7 @@ Mãos livres  : ${now() < vad.modoTVAte ? `modo TV (mais ${Math.ceil((vad.modoTV
 Jogo         : ${jogo.fase} · ${jogo.seq.length} notas` : ''}` + `
 Diversão     : ${brinc ? 'brincando de ' + brinc.tipo : '—'}${modoFoco ? ` · foco ${modoFoco.fase}${isFinite(modoFoco.fim) ? ' (' + Math.max(0, Math.ceil((modoFoco.fim - now()) / 60000)) + ' min)' : ''}` : ''}${alarme ? ' · ALARME tocando' : ''} · lembretes ${(P.lembretes || []).map((l) => hhmm(l.quando)).join(', ') || '—'} · álbum ${Object.keys(P.album || {}).length}/${FIGURINHAS.length} · desenhos ${(P.desenhos || []).length}
 Terrário     : ${terrario.temp} °C · ${terrario.umid} %${bicho.ativo ? ' · bichinho passeando' : ''} · ${diasDeVida()} dia(s) de vida${P.local ? ' · previsão: ' + (textoPrevisao() || 'carregando') : ''}
+Desempenho   : rosto ${perf.quadro.toFixed(1)} ms/quadro (${Math.round(perf.fps)} fps) · ouvido ${perf.ouvido.toFixed(2)} ms a cada 23 ms · tom ${perf.tom.toFixed(2)} ms
 Fôlego da IA : ${Math.round(folegoIA() * 100)}% (${sonoIA ? 'dormindo para recarregar' + (voltaDaIA() ? ', volta em ~' + voltaDaIA() : '') : nivelIA})
 IA hoje      : ${Object.entries(uso.dia === hojeSv() ? uso.t : {}).map(([m, n]) => `${curto(m)} ${m === 'local' ? n : COTA_DIA[m] ? Math.round(n / 1000) + 'k/' + COTA_DIA[m] / 1000 + 'k' : n}`).join(' · ') || '—'}${Object.keys(esfriando).filter((m) => esfriando[m] > Date.now()).map((m) => ` · ${curto(m)} esfriando`).join('')}
 Log remoto   : ${!tokenLogValido(cfg.logToken) ? 'sem token' : logEnvio.erro ? 'erro: ' + logEnvio.erro : logEnvio.ultimo ? `enviado há ${Math.round((Date.now() - logEnvio.ultimo) / 60000)} min` : 'ainda não enviou'} · ${filaLog.length} linha(s) na fila`

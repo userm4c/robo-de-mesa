@@ -50,3 +50,7 @@ Abra https://userm4c.github.io/robo-de-mesa/ no Chrome do Android e toque em "Ac
 - **Animação:** olhar com mola e microssacadas; antecipação antes de pular (princípio da Disney).
 
 Toque no rosto = carinho. Muitos toques seguidos = ele fica bravo.
+
+## Créditos
+
+- Ícones em pixel gerados a partir do [Noto Emoji](https://github.com/googlefonts/noto-emoji) (Google, imagens sob Apache 2.0) por `ferramentas/gerar_icones.py`.
