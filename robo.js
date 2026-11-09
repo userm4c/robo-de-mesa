@@ -27,7 +27,7 @@ const store = {
 }
 
 // ---------------------------------------------------------------- barramento
-const VERSAO = 'v32 · 09/11'
+const VERSAO = 'v33 · 09/11'
 const logLines = []
 const filaLog = [] // tudo o que aconteceu desde o último envio para o log remoto
 function pushLog(s) {
@@ -3889,7 +3889,7 @@ iniciarFala()
 // ================================================================ VOZ DE ROBÔ COM A SUA VOZ (v32)
 // O mesmo truque dos designers de som de robôs de cinema: uma voz humana gravada e transformada.
 // Você diz a palavra, ele grava (curtinho, 8 kHz, 8 bits) e toca de volta mais aguda, "picotada"
-// (8 bits), com tremido e um zumbido metálico (modulação em anel), entre dois bipinhos.
+// (8 bits), com tremido e um zumbido metálico (modulação em anel).
 // No robô de verdade: os clipes ficam na flash do S3 e os mesmos efeitos rodam na hora de tocar.
 const VOZ_PADRAO = { tom: 1.6, robotico: 0.5, tremido: 0.4 }
 let vozes = store.get('vozes', {}) // palavra normalizada → clipe (base64, 8 kHz, 8 bits)
@@ -3938,8 +3938,7 @@ function tocarVozRobo(clipes, { partes = [1], cfg = vozCfg() } = {}) {
   const lfo = actx.createOscillator(); lfo.frequency.value = 6 + tr * 5; const lg = actx.createGain(); lg.gain.value = tr * 160 // tremido (cents)
   lfo.connect(lg)
   const t0 = actx.currentTime + 0.06
-  silaba(out, t0, 1800, 2400, 0.05, 'square', 0, 0.25) // bipinho de abertura
-  let t = t0 + 0.09
+  let t = t0
   for (const b64 of clipes) {
     const buf = bufferDoClipe(b64)
     for (const f of partes) {
@@ -3950,7 +3949,6 @@ function tocarVozRobo(clipes, { partes = [1], cfg = vozCfg() } = {}) {
       t += d / tom + (f < 1 ? 0.18 : 0.08)
     }
   }
-  silaba(out, t + 0.02, 2400, 1500, 0.06, 'square', 0, 0.22) // e de fechamento
   osc.start(t0); lfo.start(t0); osc.stop(t + 0.2); lfo.stop(t + 0.2)
   const total = (t + 0.1 - actx.currentTime) * 1000
   falandoAte = Math.max(falandoAte, now() + total + 400)
