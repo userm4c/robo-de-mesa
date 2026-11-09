@@ -17,7 +17,7 @@ const store = {
 }
 
 // ---------------------------------------------------------------- barramento
-const VERSAO = 'v15 · 08/11'
+const VERSAO = 'v16 · 08/11'
 const logLines = []
 const filaLog = [] // tudo o que aconteceu desde o último envio para o log remoto
 function pushLog(s) {
@@ -819,7 +819,7 @@ function humorDaVoz(r) {
 // O S3 guarda sempre o último meio segundo de som. Quando percebe voz, grava a frase inteira
 // (com o começo), transcreve e só responde se ouviu o nome dele. Depois de uma resposta, por
 // 15 s, dá para continuar a conversa sem repetir o nome.
-const vad = { nivel: 0, ativo: false, ini: 0, ultimaFala: 0, chunks: [], pre: [], piso: 0.005, vozes: 0, verificando: false, hora: [], seguirAte: 0 }
+const vad = { modoTVAte: 0, nivel: 0, ativo: false, ini: 0, ultimaFala: 0, chunks: [], pre: [], piso: 0.005, vozes: 0, verificando: false, hora: [], seguirAte: 0 }
 function ligarEscuta(src) {
   const proc = actx.createScriptProcessor(4096, 1, 1), mudo = actx.createGain()
   mudo.gain.value = 0
@@ -892,11 +892,38 @@ function soltarMelodia(eraFala) {
   bus.emit(m.tipo, { label: 'depois de conferir' })
   bus.emit('melodia', { label: `${m.notas.length} notas`, ...m })
 }
+// É com ele? Nota rápida, sem IA: "você", frase curta e pergunta contam a favor; frase longa,
+// jeito de aula/vídeo ("pessoal", "galera") e voz diferente da do dono contam contra.
+function pareceComigo(t, outraVoz) {
+  const n = t.split(/\s+/).length
+  let p = 0
+  if (RE_VOCE.test(t) || /(^|\s)(te|tu|teu|tua)(\s|[,.!?]|$)/i.test(t)) p += 2
+  if (n <= 12) p += 1
+  if (/\?\s*$/.test(t)) p += 1
+  if (n > 25) p -= 2
+  if (/(^|\s)(pessoal|galera|gente|v[ií]deos?|aula|inscrev|canal|t[áa]\?)([\s,.!?]|$)/i.test(t)) p -= 2
+  if (outraVoz) p -= 2
+  return p >= 1
+}
+// A voz do dono é aprendida só quando ele chama pelo nome (assim a TV não estraga a referência).
+function aprenderVozDono(r) {
+  if (!r) return
+  const b = P.vozNome, a = b ? Math.max(0.2, 1 / (b.n + 1)) : 1
+  P.vozNome = b ? { med: lerp(b.med, r.med, a), n: b.n + 1 } : { med: r.med, n: 1 }
+}
+const vozDeOutraPessoa = (r) => !!(r && P.vozNome?.n >= 3 && Math.abs(r.med - P.vozNome.med) > 4.5)
+// Muita frase que não é com ele em pouco tempo = TV ou vídeo ligado: por 3 min ele ouve menos.
+function contarOuvida() {
+  const t = now()
+  vad.ouvidas = [...(vad.ouvidas || []).filter((x) => t - x < 120000), t]
+  if (vad.ouvidas.length >= 4 && t > vad.modoTVAte) { vad.modoTVAte = t + 180000; vad.ouvidas = []; pushLog('Mãos livres: parece TV ou vídeo; por 3 min só confiro frases curtas') }
+}
 async function fimDaFrase(t) {
   vad.ativo = false
   const chunks = vad.chunks, dur = vad.ultimaFala - vad.ini, resumo = prosoResumo()
   vad.chunks = []
   if (dur < 180 || vad.vozes < 2) { setTimeout(() => soltarMelodia(false)); if (dur >= 150) pushLog(`Mãos livres: descartei um som (${(dur / 1000).toFixed(1)} s, ${vad.vozes} trechos com voz)`); return } // barulho, não voz
+  if (now() < vad.modoTVAte && dur > 2500) { setTimeout(() => soltarMelodia(false)); return } // TV/vídeo: só frases curtas ("Bob-e!")
   vad.hora = vad.hora.filter((x) => t - x < 3600000)
   if (vad.hora.length >= 40) { setTimeout(() => soltarMelodia(false)); pushLog('Mãos livres: limite de 40 frases por hora (plano gratuito)'); return }
   vad.hora.push(t)
@@ -908,12 +935,20 @@ async function fimDaFrase(t) {
     eraFala = true
     const chamado = chamouPeloNome(texto), agora = now(), palavras = texto.split(/\s+/).length
     const vh = () => humorDaVoz(resumo)
-    if (chamado) { // chamou pelo nome: conversa aberta
+    const outraVoz = vozDeOutraPessoa(resumo)
+    if (chamado) { // chamou pelo nome
+      aprenderVozDono(resumo) // conversa aberta
       abrirConversa()
       if (!chamado.resto) return evento({ label: 'me chamou', P: 0.2, A: 0.4, interesse: 0.85, expr: 'curioso', gesto: 'surpresa', forcarGesto: true, icones: ['olhos', 'pergunta'], social: 0.04, dur: 3000 })
       return await responder(chamado.resto, vh())
     }
-    if (papo.estado === 'conversando' && agora < papo.ate) return await responder(texto, vh()) // no meio da conversa, sem nome
+    if (papo.estado === 'conversando' && agora < papo.ate) { // no meio da conversa, sem nome: é mesmo com ele?
+      if (pareceComigo(texto, outraVoz)) { papo.ouvidas = 0; return await responder(texto, vh()) }
+      papo.ouvidas = (papo.ouvidas || 0) + 1
+      pushLog(`(na conversa, mas não parece com ele${outraVoz ? ' · voz diferente' : ''}) ${texto.slice(0, 60)}`)
+      if (papo.ouvidas >= 2) { Object.assign(papo, { estado: 'parado', olharAte: 0, ouvidas: 0 }); pushLog('Conversa→ terminou (parece TV ou vídeo)') }
+      return contarOuvida()
+    }
     if (papo.estado === 'atento' && agora < papo.ate) { // ele perguntou "é comigo?"
       const orig = papo.pendente
       if (RE_NAO.test(texto) && palavras <= 5) return naoEraComigo('disseram que não')
@@ -921,8 +956,9 @@ async function fimDaFrase(t) {
       if (RE_SIM.test(texto) && palavras <= 7) return await responder(orig, vh(), { tipo: 'confirmou', original: orig })
       return await responder(texto, vh(), { tipo: 'continuou', original: orig })
     }
-    if ((RE_ATENCAO.test(texto) || (RE_VOCE.test(texto) && texto.length < 70)) && agora - papo.ultimoAtento > 15000) return ficarAtento(texto)
-    pushLog(`(ouviu, não era com ele) ${texto.slice(0, 60)}`)
+    if ((RE_ATENCAO.test(texto) || (RE_VOCE.test(texto) && texto.length < 70)) && !outraVoz && now() > vad.modoTVAte && agora - papo.ultimoAtento > 15000) return ficarAtento(texto)
+    pushLog(`(ouviu, não era com ele${outraVoz ? ' · voz diferente' : ''}) ${texto.slice(0, 60)}`)
+    contarOuvida()
   } catch (e) { pushLog('Mãos livres: ' + e.message) } finally { vad.verificando = false; soltarMelodia(eraFala) }
 }
 // WAV de 16 kHz (o que o Whisper usa por dentro), com o volume normalizado.
@@ -1547,7 +1583,7 @@ function respostaSonolenta(text) {
 async function pedirGroqModelo(modelo, messages, nome, esquema, extra) {
   const gpt = /gpt-oss/i.test(modelo)
   const base = { model: modelo, temperature: 0.5, max_completion_tokens: 1400, messages, ...extra, ...(gpt ? { reasoning_effort: 'low' } : {}), ...(/qwen/i.test(modelo) ? { reasoning_format: 'hidden' } : {}) }
-  const formatos = esquema ? [{ type: 'json_schema', json_schema: { name: nome, strict: gpt, schema: esquema } }, { type: 'json_object' }, null] : [{ type: 'json_object' }, null]
+  const formatos = [{ type: 'json_object' }, null] // o formato travado (json_schema) era recusado e gastava tokens; o robô corrige a resposta sozinho
   const chave = modelo + nome
   let erro
   for (let i = formatoOk[chave] ?? 0; i < formatos.length; i++) {
@@ -1685,12 +1721,13 @@ function exemplosFixos() {
 // Respostas na hora, sem IA, para frases simples (economiza a cota e é mais rápido).
 function respostaLocal(texto) {
   const t = texto.trim().toLowerCase(), n = t.split(/\s+/).length
-  if (n > 7) return null
+  if (n > 16) return null
   const v = (...l) => l[Math.floor(Math.random() * l.length)]
   const b = { intensidade: 0.6, numero: '', afeto: 0, lembrar: '', importancia: 1, acao: '', emote: '', espera_resposta: false, icones: [] }
   if (/que horas|hor[áa]rio|horas s[ãa]o/.test(t)) return { ...b, gesto: 'nenhum', emocao: 'contente', icones: ['relogio'], numero: '{hora}', pensamento: v('Olha a hora aqui.', 'Tá aqui!') }
-  if (/que dia [ée] hoje|qual (é )?a data|dia de hoje/.test(t)) return { ...b, gesto: 'nenhum', emocao: 'contente', icones: ['calendario'], numero: '{data}', pensamento: 'Hoje é esse dia.' }
-  if (/temperatura|quantos graus/.test(t)) return { ...b, gesto: 'nenhum', emocao: clima.temp >= 28 || clima.temp <= 18 ? 'entediado' : 'contente', icones: ['termometro'], numero: '{temp}', pensamento: clima.temp >= 28 ? 'Tá quente!' : clima.temp <= 18 ? 'Tá friozinho…' : 'Tá gostoso.' }
+  if (/que dia [ée] hoje|qual (é )?a data|dia de hoje/.test(t) && n <= 12) return { ...b, gesto: 'nenhum', emocao: 'contente', icones: ['calendario'], numero: '{data}', pensamento: 'Hoje é esse dia.' }
+  if (/temperatura|quantos graus/.test(t) && n <= 10) return { ...b, gesto: 'nenhum', emocao: clima.temp >= 28 || clima.temp <= 18 ? 'entediado' : 'contente', icones: ['termometro'], numero: '{temp}', pensamento: clima.temp >= 28 ? 'Tá quente!' : clima.temp <= 18 ? 'Tá friozinho…' : 'Tá gostoso.' }
+  if (n > 7) return null
   if (/umidade/.test(t)) return { ...b, gesto: 'nenhum', emocao: 'contente', icones: ['agua'], numero: '{umid}', pensamento: 'Umidade do ar.' }
   if (/^boa noite/.test(t) && n <= 4) return { ...b, gesto: 'nenhum', emocao: 'sono', icones: ['lua', 'dormir'], pensamento: 'Boa noite!', acao: 'boa_noite' }
   if (/^(oi+|ol[áa]|e a[ií]|eae|opa|bom dia|boa tarde)([\s,!.?]|$)/.test(t) && n <= 4) return { ...b, gesto: v('pulinhos', 'sim', 'piscadela'), emocao: v('feliz', 'empolgado', 'contente'), icones: v(['ok'], ['coracao'], ['sorriso'], ['sol']), pensamento: v('Oi!', 'Oiê!', 'Eba, você!'), afeto: 0.01 }
@@ -1792,6 +1829,8 @@ ELEMENTOS de decoração: ${ELEMENTOS.join(', ')}. CORES: ${Object.entries(NOME_
     else if (sobreDeco && /\b(coloc|adicion|p[õo]e|p[õo]r|bota|decor|enfeit|acrescent|faz|faça)/i.test(text)) receberSugestao({ data: dataAtiva()?.id || '', ideia: text.slice(0, 100), elementos: [], cores: [] })
     if (/^\d{1,2}\/\d{1,2}$/.test(j.aniversario_dono || '') && P.anivDono !== j.aniversario_dono) { P.anivDono = j.aniversario_dono; lembrar(`O aniversário de ${cfg.dono} é ${j.aniversario_dono}`, 8); store.set('pers', P) }
     if (ctx?.tipo === 'pesadelo' && v[0] > 0.2) { P.confianca = clamp(P.confianca + 0.02, 0.05, 0.95); lembrar(`${cfg.dono} me consolou depois de um pesadelo`, 7) }
+    const ACAO_COMBINA = { cantar: /cant|m[úu]sica|melodia/i, jogo_melodia: /jog|brinc|melodia/i, repetir_som: /barulh|som|assust/i, contar_historia: /hist[óo]ria|sonh|imagin|cont/i, boa_noite: /noite|dorm|cochil|sono/i, toca_aqui: /toca|bate|m[ãa]o/i, devanear: /imagin|invent|devane|sonh/i, decorar: /decor|enfeit|natal|festa/i }
+    if (j.acao && ACAO_COMBINA[j.acao] && !ACAO_COMBINA[j.acao].test(text)) { pushLog(`IA: ação "${j.acao}" ignorada (não combina com a frase)`); j.acao = '' }
     const acoes = { cantar: cantarMusica, jogo_melodia: iniciarJogo, repetir_som: repetirUltimoSom, contar_historia: () => contarHistoria(), boa_noite: ritualBoaNoite, toca_aqui: comecarTocaAqui, devanear: () => devanear(true), decorar: () => decorar(true) }
     if (acoes[j.acao]) setTimeout(acoes[j.acao], j.acao === 'toca_aqui' ? 2000 : 2600)
     if (RE_TCHAU.test(text) && j.acao !== 'boa_noite') papo.ate = now() + 4000
@@ -2859,7 +2898,7 @@ Sons         : ${sons.map((o) => `${o.significado || 'desconhecido'} ×${o.vezes
 Imaginação   : ${imag.ativo ? imag.ativo.tipo : dormindo ? (sono.rem ? 'REM: ' + sono.rem.tipo : `dormindo (REM em ${Math.max(0, Math.round((sono.proxREM - now()) / 60000))} min)`) : '—'} · hoje ${imagHoje.n}/14 · histórias por contar ${memorias.filter((m) => m.historia && !m.contado).length}
 Data         : ${(() => { const d = dataAtiva(); return d ? `${d.nome} (${d.dias >= 0 ? 'faltam ' + d.dias + ' dia(s)' : 'hoje'})` : 'nenhuma perto' })()}${dataSim ? ' · simulando ' + dataSim : ''} · decoração ${decoracaoAtual()?.map((e) => e.el).join(', ') || '—'} · sugestões ${(P.sugestoes || []).length}
 Vestindo     : ${Object.keys(vestido).join(', ') || '—'} · frio ${nivelFrio(clima.temp)} · calor ${nivelCalor(clima.temp)}
-Mãos livres  : ${!cfg.maosLivres ? 'desligado' : !cfg.key ? 'precisa da chave' : vad.verificando ? 'conferindo se era com ele…' : vad.ativo ? 'ouvindo uma frase' : 'esperando o nome'} · ${vad.hora.length}/40 na hora${jogo ? `
+Mãos livres  : ${now() < vad.modoTVAte ? `modo TV (mais ${Math.ceil((vad.modoTVAte - now()) / 60000)} min) · ` : ''}${P.vozNome ? `voz do dono aprendida (${P.vozNome.n}) · ` : ''}${!cfg.maosLivres ? 'desligado' : !cfg.key ? 'precisa da chave' : vad.verificando ? 'conferindo se era com ele…' : vad.ativo ? 'ouvindo uma frase' : 'esperando o nome'} · ${vad.hora.length}/40 na hora${jogo ? `
 Jogo         : ${jogo.fase} · ${jogo.seq.length} notas` : ''}` + `
 Fôlego da IA : ${Math.round(folegoIA() * 100)}% (${sonoIA ? 'dormindo para recarregar' + (voltaDaIA() ? ', volta em ~' + voltaDaIA() : '') : nivelIA})
 IA hoje      : ${Object.entries(uso.dia === hojeSv() ? uso.t : {}).map(([m, n]) => `${curto(m)} ${m === 'local' ? n : COTA_DIA[m] ? Math.round(n / 1000) + 'k/' + COTA_DIA[m] / 1000 + 'k' : n}`).join(' · ') || '—'}${Object.keys(esfriando).filter((m) => esfriando[m] > Date.now()).map((m) => ` · ${curto(m)} esfriando`).join('')}
