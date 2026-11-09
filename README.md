@@ -62,6 +62,10 @@ Abra https://userm4c.github.io/robo-de-mesa/ no Chrome do Android e toque em "Ac
   - Ao tocar: mais agudo, "picotado" (degraus de 8 bits), filtro de rádio, zumbido metálico (modulação em anel) e tremido. O humor muda o tom.
   - No 🐞 há controles de tom, robótico e tremido. As gravações vão para a memória na nuvem.
   - Palavra sem gravação usa a voz do sistema.
+- **Miados e latidos** (v34):
+  - O classificador de sons do Google (YAMNet) roda no aparelho e reconhece gato (miado, ronronar, chiado) e cachorro (latido, uivo). Só liga se houver bichos na família.
+  - Para saber quem foi, guarda a "impressão" de cada miado (tom e timbre). Nas primeiras vezes pergunta "Quem miou? Paçoca ou Jake?"; com dois exemplos de cada, passa a reconhecer sozinho e reforça com os acertos.
+  - Fala o nome do bicho e conta para a IA quem ele ouviu.
 - **Versão nova:**
   - Ele percebe a versão nova e pede: "Tem uma versão nova pra mim! Posso atualizar?" (sim / depois).
   - Também dá para pedir com "se atualiza".
