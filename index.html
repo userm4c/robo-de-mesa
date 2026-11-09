@@ -124,6 +124,12 @@
     <button id="tEnviarLog">📤 Enviar log agora</button>
   </div>
   <p class="hint">Data vazia = hoje. Escolha uma data perto de uma festa para testar a decoração. "Susto" lá em cima também grava o barulho: três sustos iguais e ele pergunta o que é.</p>
+  <label>Tela (C3) pela UART</label>
+  <div class="row" style="margin-top:0">
+    <input id="tUart" placeholder="ex.: EXPR feliz · GESTO talvez · BALAO 4000|sol|24°" style="flex:1;min-width:160px" autocomplete="off">
+    <button id="tUartEnviar">Mandar</button>
+  </div>
+  <p class="hint">Manda uma linha direto para a tela, como o S3 faz. O tráfego aparece no fim do painel (Desempenho e UART). O cérebro reenvia o estado dele na próxima mudança.</p>
   <label>Diário</label>
   <div id="diario" class="hint" style="white-space:pre-wrap"></div>
   <label>Log</label>
@@ -158,6 +164,6 @@
 </div>
 
 <video id="cam" playsinline muted hidden></video>
-<script type="module" src="robo.js?v=23"></script>
+<script type="module" src="robo.js?v=24"></script>
 </body>
 </html>

@@ -15,7 +15,8 @@ CACHE = os.path.join(AQUI, 'cache_noto')
 URL = 'https://raw.githubusercontent.com/googlefonts/noto-emoji/main/2D/png/72/emoji_u{}.png'
 os.makedirs(CACHE, exist_ok=True)
 
-src = open(os.path.join(RAIZ, 'robo.js'), encoding='utf-8').read()
+# Lê todos os .js do robô (menos o próprio atlas).
+src = ''.join(open(os.path.join(RAIZ, f), encoding='utf-8').read() for f in sorted(os.listdir(RAIZ)) if f.endswith('.js') and f != 'icones.js')
 
 # Todos os emojis que aparecem em textos do código (grafemas com pictogramas).
 padrao = re.compile(r'(?:[\U0001F1E6-\U0001F1FF]{2})|(?:[☀-➿⬀-⯿\U0001F000-\U0001FAFF⌚-⌛⏩-⏺](?:️)?(?:‍[☀-➿\U0001F000-\U0001FAFF♀♂](?:️)?)*)')

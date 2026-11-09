@@ -5,8 +5,9 @@
 //   Cérebro = emoções em 3 camadas (personalidade, humor do dia, emoção) + Groq
 // As mensagens entre S3 e C3 passam pelo "bus", que no robô vira a UART.
 
-import { ICONES_PX } from './icones.js?v=22'
-import { criarServidor } from './servidor.js?v=23'
+import { criarServidor } from './servidor.js?v=24'
+import { criarC3 } from './c3.js?v=24'
+import { ICONES, PALETA, NOME_COR, EMOTES, ELEMENTOS, EXPR, GESTO_DUR as GESTOS, SAIDAS } from './comum.js?v=24'
 const $ = (s) => document.querySelector(s)
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
 const lerp = (a, b, t) => a + (b - a) * t
@@ -20,7 +21,7 @@ const store = {
 }
 
 // ---------------------------------------------------------------- barramento
-const VERSAO = 'v23 · 08/11'
+const VERSAO = 'v24 · 08/11'
 const logLines = []
 const filaLog = [] // tudo o que aconteceu desde o último envio para o log remoto
 function pushLog(s) {
@@ -361,108 +362,40 @@ function tickComportamento() {
 
 setInterval(() => { store.set('pers', P); store.set('necess', N); store.set('humor', { dia: humor.dia, P: humor.P, A: humor.A, D: humor.D }) }, 10000)
 
-// ================================================================ C3: ROSTO
-const cv = $('#face'), gTela = cv.getContext('2d')
-let g = gTela // durante um emote, o rosto é desenhado fora da tela e entra com efeito
-g.setTransform(2, 0, 0, 2, 0, 0) // canvas 480 desenhando em 240×240, como a tela de verdade
-
-const BASE = { open: 1, tired: 0, angry: 0, happy: 0, size: 1, mouth: 0, mouthOpen: 0, asym: 0, dy: 0, bochecha: 0, lagrimas: 0, color: [125, 249, 255] }
-const EXPR = {
-  neutro: {}, contente: { happy: 0.35, mouth: 0.4 }, feliz: { happy: 0.6, mouth: 0.8, size: 1.05 },
-  animado: { happy: 0.75, mouth: 1, mouthOpen: 0.35, size: 1.12 }, triste: { open: 0.75, tired: 0.55, mouth: -0.7, dy: 6, color: [120, 170, 255] },
-  bravo: { open: 0.8, angry: 0.7, mouth: -0.45, color: [255, 120, 110] }, medo: { open: 1.15, size: 0.88, mouth: -0.2, mouthOpen: 0.4 },
-  surpreso: { open: 1.2, size: 1.15, mouthOpen: 0.6 }, entediado: { open: 0.45, tired: 0.25, mouth: -0.1, dy: 4 },
-  sono: { open: 0.12, tired: 0.4, dy: 6 }, curioso: { asym: 0.25, mouth: 0.1, open: 1.05 },
-  amor: { happy: 0.7, mouth: 0.9, size: 1.05, color: [255, 126, 182] }, calor: { open: 0.55, tired: 0.45, mouth: -0.2, color: [255, 179, 107] },
-  frio: { open: 0.8, size: 0.92, mouth: -0.3, color: [143, 211, 255] }, pensando: { open: 0.9, asym: 0.15, dy: -4 },
-  ouvindo: { open: 1.05, asym: 0.1, mouth: 0.1 }, musica: { happy: 0.5, mouth: 0.6 },
-  rindo: { forma: 'fechado_feliz', mouthOpen: 0.55, bochecha: 0.7 },
-  apaixonado: { forma: 'coracao', mouth: 0.8, bochecha: 0.5, color: [255, 110, 160] },
-  empolgado: { forma: 'estrela', mouthOpen: 0.45, size: 1.08, color: [255, 214, 102] },
-  tonto: { forma: 'espiral', mouth: -0.2, mouthOpen: 0.2 },
-  timido: { open: 0.8, happy: 0.3, mouth: 0.3, bochecha: 1 },
-  desconfiado: { open: 0.42, angry: 0.15, mouth: -0.15, asym: 0.12 },
-  chorando: { open: 0.8, tired: 0.5, mouth: -0.8, lagrimas: 1, color: [120, 170, 255] },
-  orgulhoso: { happy: 0.45, tired: 0.2, mouth: 0.7, dy: -5 },
-  desmaiado: { forma: 'x', mouthOpen: 0.3 },
-  olho_sonolento: { open: 0.45, tired: 0.5, dy: 6 },
-  pesadelo: { open: 0.12, tired: 0.3, angry: 0.35, mouth: -0.7, dy: 6, color: [150, 160, 255] },
+// ================================================================ S3 → C3: a tela pela UART
+// O cérebro (S3) não desenha nada. Cada mudança na tela vira uma linha curta de texto para o C3
+// (c3.js), como numa UART a 921600 baud (~90 KB/s). O 🐞 mostra o tráfego.
+const t0Pagina = now()
+const uart = { msgs: 0, bytes: 0, volta: 0, ultimas: [], cont: {}, taxaMsgs: 0, taxaBytes: 0, ant: { msgs: 0, bytes: 0, t: now() } }
+const utf8 = new TextEncoder()
+const c3 = criarC3($('#face'), { enviar: (linha) => receberDoC3(linha), erro: (onde, e) => erroUmaVez('C3 ' + onde, e) })
+function anotarUart(seta, linha) {
+  uart.ultimas.unshift(`${((now() - t0Pagina) / 1000).toFixed(1)}s ${seta} ${linha.length > 72 ? linha.slice(0, 72) + '…' : linha}`)
+  if (uart.ultimas.length > 12) uart.ultimas.length = 12
 }
-const cur = structuredClone(BASE)
-cur.bochecha = 0; cur.lagrimas = 0
-let formaAtual = 'normal'
-
-// ---------------------------------------------------------------- gestos (movimentos do rosto inteiro)
-// t vai de 0 a 1. Devolvem deslocamento, giro, escala e, às vezes, olhar ou forma dos olhos.
-const GESTOS = {
-  sim: { dur: 900, f: (t) => ({ oy: Math.sin(t * Math.PI * 4) * 10 * (1 - t * 0.3) }) },
-  nao: { dur: 1000, f: (t) => ({ ox: Math.sin(t * Math.PI * 6) * 14 * (1 - t * 0.3) }) },
-  talvez: { dur: 1400, f: (t) => ({ rot: Math.sin(t * Math.PI * 2) * 0.18 }) },
-  nao_sei: { dur: 1600, f: (t) => ({ rot: Math.sin(t * Math.PI) * 0.14, gy: -0.8, gx: 0.3 }) },
-  pulinhos: { dur: 1200, f: (t) => ({ oy: -Math.abs(Math.sin(t * Math.PI * 3)) * 18, sy: 1 - Math.abs(Math.cos(t * Math.PI * 3)) * 0.08 }) },
-  rir: { dur: 1500, f: (t) => ({ oy: Math.sin(t * Math.PI * 18) * 3, rot: Math.sin(t * Math.PI * 4) * 0.05, forma: 'fechado_feliz' }) },
-  piscadela: { dur: 800, f: (t) => ({ formaD: t < 0.75 ? 'fechado_feliz' : null, rot: Math.sin(t * Math.PI) * 0.06 }) },
-  timido: { dur: 2500, f: () => ({ gx: 0.6, gy: 0.8 }) },
-  desconfiado: { dur: 2600, f: (t) => ({ gx: -0.8 + t * 1.6, gy: 0.1 }) },
-  tonto: { dur: 2000, f: (t) => ({ rot: Math.sin(t * Math.PI * 4) * 0.15, ox: Math.sin(t * Math.PI * 3) * 8, forma: 'espiral' }) },
-  suspiro: { dur: 1500, f: (t) => ({ oy: Math.sin(t * Math.PI) * 10, sy: 1 - Math.sin(t * Math.PI) * 0.05 }) },
-  dancinha: { dur: 3000, f: (t) => ({ rot: Math.sin(t * Math.PI * 6) * 0.15, ox: Math.sin(t * Math.PI * 6) * 10, oy: -Math.abs(Math.sin(t * Math.PI * 6)) * 6 }) },
-  encolher: { dur: 1500, f: (t) => ({ s: 1 - Math.sin(t * Math.PI) * 0.15, oy: Math.sin(t * Math.PI) * 6 }) },
-  olhar_em_volta: { dur: 2400, f: (t) => ({ gx: Math.sin(t * Math.PI * 2) * 0.9, gy: 0 }) },
-  desmaiar: { dur: 2600, f: (t) => { const k = t < 0.8 ? Math.min(1, t * 3) : 1 - (t - 0.8) * 5; return { rot: 0.4 * k, oy: 22 * k, forma: t < 0.85 ? 'x' : null } } },
-  surpresa: { dur: 700, antes: { oy: 4, sy: 0.93 }, f: (t) => ({ oy: -Math.sin(t * Math.PI) * 12, s: 1 + Math.sin(t * Math.PI) * 0.08 }) },
-  espreguicar: { dur: 2200, f: (t) => ({ sy: 1 + Math.sin(t * Math.PI) * 0.12, oy: -Math.sin(t * Math.PI) * 8, rot: Math.sin(t * Math.PI * 2) * 0.05, forma: t > 0.2 && t < 0.8 ? 'fechado_feliz' : null }) },
+function enviarC3(linha) {
+  uart.msgs++; uart.bytes += utf8.encode(linha).length + 1
+  const cmd = linha.split(' ', 1)[0]; uart.cont[cmd] = (uart.cont[cmd] || 0) + 1
+  anotarUart('→', linha)
+  c3.receber(linha)
 }
-// Antecipação (princípio de animação da Disney): antes de pular, se abaixa um pouquinho.
-GESTOS.pulinhos.antes = { oy: 5, sy: 0.9 }
-GESTOS.tremer = { dur: 1500, f: (t) => ({ ox: Math.sin(t * Math.PI * 34) * 3 * forcaTremor * (1 - t * 0.5), oy: Math.sin(t * Math.PI * 27) * 1.2 * forcaTremor }) }
-GESTOS.aceno = { dur: 520, f: (t) => ({ oy: Math.sin(t * Math.PI) * 5 }) }
-GESTOS.bocejo = { dur: 2000, f: (t) => ({ sy: 1 + Math.sin(t * Math.PI) * 0.07, oy: -Math.sin(t * Math.PI) * 4, forma: t > 0.15 && t < 0.85 ? 'fechado' : null }) }
-GESTOS.sim.antes = { oy: -4 }
-let gesto = null
-function iniciarGesto(nome) { if (GESTOS[nome]) { gesto = { nome, t0: now() }; bus.emit('gesto', { label: nome }, 'Cérebro') } }
-function estadoGesto(t) {
-  if (!gesto) return {}
-  const g0 = GESTOS[gesto.nome], k = (t - gesto.t0) / g0.dur
-  if (k >= 1) { gesto = null; return {} }
-  if (g0.antes) {
-    if (k < 0.12) { const a = Math.sin((k / 0.12) * Math.PI / 2); return Object.fromEntries(Object.entries(g0.antes).map(([c, v]) => [c, c === 'sy' || c === 's' ? 1 + (v - 1) * a : v * a])) }
-    return g0.f((k - 0.12) / 0.88)
-  }
-  return g0.f(k)
+function receberDoC3(linha) {
+  uart.volta += utf8.encode(linha).length + 1; anotarUart('←', linha)
+  if (linha.startsWith('TOQUE ')) toque()
 }
-
-// ---------------------------------------------------------------- ícones do balão
-// No robô de verdade viram imagens de 32×32 na memória do C3; aqui usam os emojis do celular.
-const ICONES = {
-  sol: '☀️', chuva: '🌧️', nuvem: '☁️', trovao: '⛈️', neve: '❄️', calor: '🔥', lua: '🌙', estrela: '⭐', arco_iris: '🌈',
-  relogio: '⏰', ampulheta: '⏳', calendario: '📅', comida: '🍕', cafe: '☕', agua: '💧', bolo: '🎂', fruta: '🍎',
-  musica: '🎵', jogo: '🎮', livro: '📚', computador: '💻', celular: '📱', filme: '🎬', foto: '📷', futebol: '⚽',
-  casa: '🏠', trabalho: '💼', escola: '🎓', dinheiro: '💰', presente: '🎁', festa: '🎉', ideia: '💡', trofeu: '🏆',
-  ok: '👍', nao_ok: '👎', certo: '✅', errado: '❌', coracao: '❤️', coracao_partido: '💔', abraco: '🤗', musculo: '💪',
-  cerebro: '🧠', olhos: '👀', dormir: '💤', doente: '🤒', remedio: '💊', cachorro: '🐶', gato: '🐱', planta: '🌱',
-  flor: '🌸', carro: '🚗', aviao: '✈️', mundo: '🌍', brasil: '🇧🇷', robo: '🤖', pessoa: '🧑', familia: '👪',
-  teclado: '⌨️', calculadora: '🧮', ouvido: '👂', sorvete: '🍦', pizza: '🍕', arvore: '🎄', sino: '🔔', vela: '🕯️', termometro: '🌡️', coroa: '👑', sorriso: '😊', praia: '🏖️', luz: '💡', pergunta: '❓', raio: '⚡', bateria: '🔋', wifi: '📶', seta_cima: '⬆️', seta_baixo: '⬇️', mais: '➕', menos: '➖', fantasma: '👻',
+const batida = (k = 1) => enviarC3(`BATIDA ${k}`)
+let gesto = null // {nome, ate}: quem anima é o C3; o cérebro só sabe até quando dura
+function iniciarGesto(nome, quieto) {
+  if (!GESTOS[nome]) return
+  gesto = { nome, ate: now() + GESTOS[nome] }
+  enviarC3(nome === 'tremer' ? `GESTO tremer ${forcaTremor.toFixed(2)}` : 'GESTO ' + nome)
+  if (!quieto) bus.emit('gesto', { label: nome }, 'Cérebro')
 }
 let balao = null // {itens, numero, ate}
-// Ícone em pixel 16x16 (paleta RGB565 de cada ícone). Sem ícone no atlas, cai no emoji do sistema.
-const corPx = {}
-function css565(h) { if (corPx[h]) return corPx[h]; const v = parseInt(h, 16); return (corPx[h] = `rgb(${((v >> 11) & 31) << 3},${((v >> 5) & 63) << 2},${(v & 31) << 3})`) }
-function desenharIconePx(chave, cx, cy, e = 1.6) {
-  const emoji = ICONES[chave] || chave, d = ICONES_PX[emoji]
-  if (!d) { g.save(); g.font = `${Math.round(16 * e)}px sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(emoji, cx, cy); g.restore(); return }
-  const x0 = cx - 8 * e, y0 = cy - 8 * e
-  for (let y = 0; y < 16; y++) {
-    const l = d.l[y]
-    for (let x = 0; x < 16; x++) { const c = l.charCodeAt(x) - 48; if (!c) continue; g.fillStyle = css565(d.p[(c > 9 ? c - 39 : c) - 1]); g.fillRect(x0 + x * e, y0 + y * e, e + 0.35, e + 0.35) }
-  }
-}
 // O modelo às vezes escreve o nome do ícone de outro jeito ("coração", "olho", "som"): aceita.
 const APELIDO_ICONE = { luzes: 'luz', lampada: 'luz', calcula: 'calculadora', camera: 'foto', cameras: 'foto', filmes: 'filme', cansado: 'dormir', sono: 'dormir', olho: 'olhos', som: 'musica', soma: 'mais', codigo: 'computador', aprender: 'cerebro', assobio: 'musica', canto: 'musica', cancao: 'musica', jogar: 'jogo', ideia_brilhante: 'ideia', sol_quente: 'sol', frio: 'neve', amor: 'coracao', feliz: 'sorriso', livros: 'livro', estrela_cadente: 'estrela', arvore_de_natal: 'arvore', natal: 'arvore', comida_gostosa: 'comida' }
 function icone_(x) { const k = String(x || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z_]/g, ''); return ICONES[k] ? k : ICONES[APELIDO_ICONE[k]] ? APELIDO_ICONE[k] : null }
 const limparIcones = (l) => [...new Set((Array.isArray(l) ? l : []).map(icone_).filter(Boolean))].slice(0, 3)
-const olhar = { x: 0, y: 0, vx: 0, vy: 0, tx: 0, ty: 0, mx: 0, my: 0, proxSacada: 0, proxMicro: 0 }
-let piscar = 0, proxPiscar = now() + 3000, balanco = 0, inclinacao = 0
 
 function alvoExpr() {
   if (dormindo) return now() < olhoSonolentoAte ? 'olho_sonolento' : sono.rem?.tipo === 'pesadelo' ? 'pesadelo' : 'sono'
@@ -470,213 +403,82 @@ function alvoExpr() {
   if (audio.musica && P.gostos[audio.estilo] > -0.3) return 'musica'
   return emo.nome
 }
-
-function desenharOlho(cx, cy, w, h, lado, p, cor, forma = 'normal', t = 0) {
-  g.save(); g.fillStyle = cor; g.strokeStyle = cor; g.lineCap = 'round'; g.lineJoin = 'round'
-  const s = w / 54
-  if (forma === 'coracao') {
-    const k = s * (1 + Math.sin(t / 160) * 0.06)
-    g.translate(cx, cy); g.scale(k, k); g.beginPath(); g.moveTo(0, 26); g.bezierCurveTo(-46, -6, -22, -44, 0, -18); g.bezierCurveTo(22, -44, 46, -6, 0, 26); g.fill()
-    g.restore(); return
-  }
-  if (forma === 'estrela') {
-    g.translate(cx, cy); g.rotate(Math.sin(t / 300) * 0.15); g.beginPath()
-    for (let i = 0; i < 10; i++) { const r = (i % 2 ? 13 : 32) * s, a = -Math.PI / 2 + i * Math.PI / 5; g.lineTo(Math.cos(a) * r, Math.sin(a) * r) }
-    g.closePath(); g.fill(); g.restore(); return
-  }
-  if (forma === 'x') {
-    g.lineWidth = 8 * s; g.beginPath(); g.moveTo(cx - 18 * s, cy - 18 * s); g.lineTo(cx + 18 * s, cy + 18 * s); g.moveTo(cx + 18 * s, cy - 18 * s); g.lineTo(cx - 18 * s, cy + 18 * s); g.stroke()
-    g.restore(); return
-  }
-  if (forma === 'espiral') {
-    g.lineWidth = 5 * s; g.translate(cx, cy); g.rotate(t / 150 * lado); g.beginPath()
-    for (let a = 0; a < Math.PI * 6; a += 0.2) { const r = a * 1.6 * s; g.lineTo(Math.cos(a) * r, Math.sin(a) * r) }
-    g.stroke(); g.restore(); return
-  }
-  if (forma === 'fechado') {
-    g.lineWidth = 7 * s; g.beginPath(); g.moveTo(cx - 20 * s, cy + 4 * s); g.quadraticCurveTo(cx, cy + 12 * s, cx + 20 * s, cy + 4 * s); g.stroke()
-    g.restore(); return
-  }
-  if (forma === 'fechado_feliz') {
-    g.lineWidth = 8 * s; g.beginPath(); g.arc(cx, cy + 10 * s, 20 * s, Math.PI * 1.15, Math.PI * 1.85); g.stroke()
-    g.restore(); return
-  }
-  g.restore()
-  const r = Math.min(w, h) * 0.3
-  g.fillStyle = cor
-  g.beginPath(); g.roundRect(cx - w / 2, cy - h / 2, w, h, Math.max(1, Math.min(r, h / 2))); g.fill()
-  g.save(); g.globalCompositeOperation = 'destination-out'; g.fillStyle = '#000' // as máscaras "recortam" o olho: o fundo aparece por trás
-  const top = cy - h / 2 - 1, L = cx - w / 2 - 1, R = cx + w / 2 + 1
-  const fora = lado < 0 ? L : R, dentro = lado < 0 ? R : L
-  if (p.tired > 0.02) { g.beginPath(); g.moveTo(L, top); g.lineTo(R, top); g.lineTo(fora, top + p.tired * h * 0.75); g.closePath(); g.fill() }
-  if (p.angry > 0.02) { g.beginPath(); g.moveTo(L, top); g.lineTo(R, top); g.lineTo(dentro, top + p.angry * h * 0.75); g.closePath(); g.fill() }
-  if (p.happy > 0.02) { g.beginPath(); g.ellipse(cx, cy + h * (1 - 0.5 * p.happy) + 2, w * 0.8, h * 0.55, 0, 0, Math.PI * 2); g.fill() }
-  g.restore()
+// Para onde olhar. O C3 faz sozinho a mola, as microssacadas e as olhadas aleatórias ("auto").
+function olharDoCerebro(t, nome) {
+  if (dormindo && sono.rem) return 'rem'
+  if (bicho.ativo && !dormindo && !imag.ativo) return [clamp((bicho.x - 120) / 110, -1, 1), 0.8] // olhando o bichinho
+  if (t < papo.olharAte && !imag.ativo) return [pessoa.presente ? pessoa.x : 0, pessoa.presente ? pessoa.y * 0.8 : 0.05] // olhando para você
+  if (imag.ativo?.tipo === 'devaneio' && !dormindo) return [0.55, -0.65] // olhando para a nuvem de pensamento
+  let y = null
+  if (audio.melodiaAte > t) y = audio.melodiaY
+  if (nome === 'pensando') y = -0.7
+  if (pessoa.presente && t - pessoa.visto < 1500) return [pessoa.x, y ?? pessoa.y * 0.8]
+  return `auto ${(0.5 + P.curiosidade * 0.5).toFixed(2)} ${emo.nome === 'entediado' ? 1 : 0}${y !== null ? ' ' + y.toFixed(2) : ''}`
+}
+const q2 = (v) => (Math.round(v * 20) / 20).toFixed(2)
+const enviado = {}
+// Manda só quando muda (é o que faz a UART ficar quase parada com o rosto quieto).
+function manter(chave, linha) { if (enviado[chave] !== linha) { enviado[chave] = linha; enviarC3(linha) } }
+function sincronizarC3(dt) {
+  const t = now(), nome = alvoExpr()
+  manter('expr', 'EXPR ' + nome)
+  const o = olharDoCerebro(t, nome)
+  manter('olhar', 'OLHAR ' + (Array.isArray(o) ? `${q2(o[0])} ${q2(o[1])}` : o))
+  manter('atento', 'ATENTO ' + (papo.estado === 'atento' ? 1 : 0))
+  manter('sono', 'SONO ' + (dormindo ? 1 : 0))
+  manter('treme', 'TREME ' + nivelFrio(clima.temp))
+  manter('icone', 'ICONE ' + (icone?.tipo || '-'))
+  manter('status', `STATUS ${camera.ligada ? 1 : 0}${vad.ativo ? 1 : 0}${vad.verificando ? 1 : 0}${gravando ? 1 : 0}`)
+  manter('humor', cfg.corHumor === false || dormindo ? 'HUMOR -' : `HUMOR ${(Math.round(emo.P * 10) / 10).toFixed(1)} ${(Math.round(emo.A * 10) / 10).toFixed(1)}`)
+  if (balao && t > balao.ate) balao = null
+  if (balao !== enviado.balao) { enviado.balao = balao; enviarC3(balao ? `BALAO ${Math.max(300, Math.round(balao.ate - t))}|${balao.itens.join(',')}|${String(balao.numero || '').replace(/[|\n]/g, '/')}` : 'BALAO -') }
+  if (palco && t > palco.ate) palco = null
+  if (palco !== enviado.palco) { enviado.palco = palco; if (palco) enviarC3(palco.desenho ? `DESENHO ${palco.dur} ${palco.saida} ${palco.volta} ${palco.px.join('')}` : `EMOTE ${palco.emote} ${palco.dur} ${palco.saida} ${palco.volta} ${palco.lado}`) }
+  manter('acess', 'ACESS ' + (Object.keys(vestido).join(',') || '-'))
+  const els = [...(decoracaoAtual() || []), ...(t < festaAte ? [{ el: 'baloes' }, { el: 'confete' }] : [])]
+  if (decoNova) { decoNova = false; enviado.moldura = null }
+  manter('moldura', 'MOLDURA ' + (els.map((d) => d.el + ':' + (d.cores || []).join('')).join(';') || '-'))
+  // Tela embaçada (umidade alta): o cérebro decide quanto; o C3 desenha e limpa.
+  const alvoN = clima.umid >= 80 ? clamp((clima.umid - 75) / 20, 0, 1) : 0
+  termo.nevoa += (alvoN - termo.nevoa) * Math.min(1, dt * 0.24)
+  manter('nevoa', 'NEVOA ' + (termo.nevoa < 0.03 ? '0' : q2(termo.nevoa)))
+  if (termo.limpando && termo.limpando !== enviado.limpando) { enviado.limpando = termo.limpando; enviarC3('LIMPAR') }
+  if (termo.limpando && t - termo.limpando.t0 > 1800) termo.limpando = null
+  // Imaginação: nuvem do devaneio, painel da história, sonho perto do Zzz.
+  const a = imag.ativo, passo = a?.hist?.passo || 2300
+  const qd = a?.hist?.quadros?.[Math.max(0, Math.floor((t - a.t0) / passo))]
+  manter('nuvem', 'NUVEM ' + (a?.tipo === 'devaneio' ? (qd?.icones?.length ? qd.icones.join(',') : '.') : '-'))
+  manter('painel', 'PAINEL ' + (a?.tipo === 'contando' && qd && t >= a.t0 ? `${Math.floor((t - a.t0) / passo)} ${a.hist.quadros.length} ${(qd.icones || []).join(',') || '-'}` : '-'))
+  const sq = dormindo && sono.rem?.hist ? sono.rem.hist.quadros[Math.floor((t - sono.rem.t0) / 4000) % sono.rem.hist.quadros.length] : null
+  manter('sonho', 'SONHO ' + (sq?.icones?.length ? sq.icones.join(',') : '-'))
+  if (carneirosAte !== enviado.carneiros) { enviado.carneiros = carneirosAte; if (carneirosAte > t) enviarC3('CARNEIROS ' + Math.round(carneirosAte - t)) }
+  // Bichinho: o cérebro anda com ele (para saber para onde olhar); o C3 só fica sabendo quando ele vira.
+  const velB = terrario.umid < 50 ? 15 : 36
+  if (bicho.ativo) { bicho.x += bicho.dir * velB * dt; if (bicho.x < -14 || bicho.x > 254) bicho.dir *= -1 }
+  const chB = bicho.ativo ? `${bicho.dir} ${velB} ${terrario.umid < 50 ? 1 : 0}` : '-'
+  if (chB !== enviado.bicho) { enviado.bicho = chB; enviarC3(bicho.ativo ? `BICHO ${Math.round(bicho.x)} ${chB}` : 'BICHO -') }
+  const chA = modoFoco && modoFoco.fase !== 'espera' && isFinite(modoFoco.fim) ? `${modoFoco.fase} ${Math.round(modoFoco.fim - modoFoco.ini)}` : '-'
+  if (chA !== enviado.anel) { enviado.anel = chA; enviarC3(chA === '-' ? 'ANEL -' : `ANEL ${chA} ${Math.round(modoFoco.fim - t)}`) }
 }
 
-function desenharIcone(tipo, t) {
-  const y = 34 + Math.sin(t / 300) * 3
-  g.save(); g.textAlign = 'center'; g.textBaseline = 'middle'
-  if (tipo === 'coracao') {
-    g.fillStyle = '#ff7eb6'; g.translate(204, y); const s = 1 + Math.sin(t / 150) * 0.08; g.scale(s, s)
-    g.beginPath(); g.moveTo(0, 8); g.bezierCurveTo(-16, -4, -8, -16, 0, -7); g.bezierCurveTo(8, -16, 16, -4, 0, 8); g.fill()
-  } else if (tipo === 'gota') {
-    g.fillStyle = '#6cc8ff'; g.translate(40, 70 + ((t / 25) % 18))
-    g.beginPath(); g.moveTo(0, -9); g.quadraticCurveTo(8, 3, 0, 7); g.quadraticCurveTo(-8, 3, 0, -9); g.fill()
-  } else if (tipo === 'zzz') {
-    g.fillStyle = '#e8f6ff'; g.font = 'bold 16px system-ui'
-    for (let i = 0; i < 3; i++) { const k = ((t / 900 + i / 3) % 1); g.globalAlpha = 1 - k; g.fillText('z', 196 + k * 22, 54 - k * 34) }
-  } else {
-    const txt = { interrogacao: '?', '?': '?', exclamacao: '!', '!': '!', reticencias: '…', nota: '♪' }[tipo] || tipo
-    g.fillStyle = tipo === 'exclamacao' || tipo === '!' ? '#ffd166' : tipo === 'nota' ? '#7df9ff' : '#e8f6ff'
-    g.font = 'bold 30px system-ui'; g.fillText(txt, 204, y)
-  }
-  g.restore()
-}
-
-// Balão no alto da tela: até 3 ícones, aparecendo um por um, ou um número curto (hora, temperatura).
-function desenharBalao(t) {
-  const idade = t - balao.t0 // os ícones entram um por um
-  const itens = balao.itens.map((k) => ICONES[k] || k)
-  const temNum = !!balao.numero
-  const larg = temNum ? Math.max(70, balao.numero.length * 17 + 30) : itens.length * 36 + 18
-  const x = 120 - larg / 2, y = 4, alt = 40
-  g.save()
-  g.fillStyle = '#1b2632'; g.strokeStyle = '#3a4a5a'; g.lineWidth = 1.5
-  g.beginPath(); g.roundRect(x, y, larg, alt, 14); g.fill(); g.stroke()
-  g.beginPath(); g.moveTo(112, y + alt); g.lineTo(120, y + alt + 7); g.lineTo(128, y + alt); g.fill()
-  g.textAlign = 'center'; g.textBaseline = 'middle'
-  if (temNum) {
-    g.fillStyle = '#e8f6ff'; g.font = 'bold 24px system-ui, sans-serif'; g.fillText(balao.numero, 120, y + alt / 2 + 1)
-  } else {
-    const mostrados = Math.min(itens.length, 1 + Math.floor(Math.max(0, idade) / 450))
-    for (let i = 0; i < mostrados; i++) desenharIconePx(itens[i], x + 27 + i * 36, y + alt / 2 + Math.round(Math.sin(t / 250 + i) * 1.5), 1.6)
-  }
-  g.restore()
-}
-
-let tAnterior = now()
 const errosVistos = {}
 function erroUmaVez(onde, e) { const k = onde + ':' + e.message; if (errosVistos[k]) return; errosVistos[k] = 1; pushLog(`ERRO em ${onde}: ${e.message} ${(e.stack || '').split('\n')[1]?.trim() || ''}`); setTimeout(() => enviarLog('erro'), 2000) }
-// Medidor de desempenho (média móvel): quanto custa cada parte. Serve de orçamento para o C3 e o S3.
-const perf = { quadro: 0, fps: 0, ouvido: 0, ultimoQ: 0, tom: 0 }
+// Medidor de desempenho (média móvel): quanto custa cada parte. Serve de orçamento para o S3.
+const perf = { cerebro: 0, ouvido: 0, tom: 0 }
 const media = (a, b) => (a ? a * 0.95 + b * 0.05 : b)
-function quadro() {
-  const a = performance.now()
-  if (perf.ultimoQ) perf.fps = media(perf.fps, 1000 / Math.max(1, a - perf.ultimoQ))
-  perf.ultimoQ = a
-  try { desenharQuadro(); perf.quadro = media(perf.quadro, performance.now() - a) } catch (e) { g = gTela; erroUmaVez('quadro', e) } finally { requestAnimationFrame(quadro) }
+// O cérebro roda num ritmo próprio (20 vezes por segundo), separado da tela.
+let tCerebro = now()
+function cicloCerebro() {
+  const a = performance.now(), t = now(), dt = Math.min(0.1, (t - tCerebro) / 1000); tCerebro = t
+  try {
+    tickCerebro(dt)
+    if (gesto && t > gesto.ate) gesto = null
+    sincronizarC3(dt)
+  } catch (e) { erroUmaVez('cérebro', e) }
+  perf.cerebro = media(perf.cerebro, performance.now() - a)
+  if (t - uart.ant.t >= 1000) { const k = 1000 / (t - uart.ant.t); uart.taxaMsgs = media(uart.taxaMsgs, (uart.msgs - uart.ant.msgs) * k); uart.taxaBytes = media(uart.taxaBytes, (uart.bytes - uart.ant.bytes) * k); uart.ant = { msgs: uart.msgs, bytes: uart.bytes, t } }
 }
-function desenharQuadro() {
-  const t = now(), dt = Math.min(0.1, (t - tAnterior) / 1000); tAnterior = t
-  tickCerebro(dt)
-
-  const nome = alvoExpr()
-  const alvo = Object.assign({}, BASE, EXPR[nome] || {})
-  const vel = 1 - Math.exp(-dt * 9)
-  for (const k of Object.keys(BASE)) {
-    if (k === 'color') cur.color = cur.color.map((c, i) => lerp(c, alvo.color[i], vel))
-    else cur[k] = lerp(cur[k], alvo[k], vel)
-  }
-  const ge = estadoGesto(t)
-  const novaForma = alvo.forma || 'normal'
-  if (novaForma !== formaAtual) { formaAtual = novaForma; piscar = 1 } // troca de olho escondida numa piscada
-
-  // Para onde olhar: rosto da pessoa > melodia > olhadas aleatórias.
-  if (pessoa.presente && t - pessoa.visto < 1500) { olhar.tx = pessoa.x; olhar.ty = pessoa.y * 0.8 }
-  else if (t > olhar.proxSacada) { olhar.proxSacada = t + rnd(1500, 5000) * (emo.nome === 'entediado' ? 1.6 : 1); olhar.tx = rnd(-0.8, 0.8) * (0.5 + P.curiosidade * 0.5); olhar.ty = rnd(-0.4, 0.4) }
-  if (audio.melodiaAte > t) olhar.ty = audio.melodiaY
-  if (nome === 'pensando') olhar.ty = -0.7
-  if (imag.ativo?.tipo === 'devaneio' && !dormindo) { olhar.tx = 0.55; olhar.ty = -0.65 } // olhando para a nuvem de pensamento
-  if (t < papo.olharAte && !imag.ativo) { olhar.tx = pessoa.presente ? pessoa.x : 0; olhar.ty = pessoa.presente ? pessoa.y * 0.8 : 0.05 } // olhando para você
-  if (bicho.ativo && !dormindo && !imag.ativo) { olhar.tx = clamp((bicho.x - 120) / 110, -1, 1); olhar.ty = 0.8 } // olhando o bichinho
-  if (dormindo && sono.rem) { olhar.tx = Math.sin(t / 70) * 0.3 + Math.sin(t / 23) * 0.08; olhar.ty = Math.sin(t / 130) * 0.08 } // REM
-  if (ge.gx !== undefined) olhar.tx = ge.gx
-  if (ge.gy !== undefined) olhar.ty = ge.gy
-  const vo = 1 - Math.exp(-dt * 12)
-  // Olhar com mola (passa um tiquinho do ponto e volta) + microssacadas, como olhos de verdade.
-  if (t > olhar.proxMicro) { olhar.proxMicro = t + rnd(300, 900); olhar.mx = rnd(-0.035, 0.035); olhar.my = rnd(-0.03, 0.03) }
-  const wm = 2 * Math.PI * 2.6, z = 0.55
-  for (let i = 0; i < 4; i++) {
-    const h4 = dt / 4
-    olhar.vx += (wm * wm * (olhar.tx + olhar.mx - olhar.x) - 2 * z * wm * olhar.vx) * h4; olhar.x += olhar.vx * h4
-    olhar.vy += (wm * wm * (olhar.ty + olhar.my - olhar.y) - 2 * z * wm * olhar.vy) * h4; olhar.y += olhar.vy * h4
-  }
-
-  if (t > proxPiscar) { piscar = 1; proxPiscar = t + rnd(2000, 6000) }
-  piscar = Math.max(0, piscar - dt * 7)
-  const fecha = piscar > 0 ? 1 - Math.sin(piscar * Math.PI) * 0.95 : 1
-  balanco *= Math.exp(-dt * 9)
-  const alvoIncl = papo.estado === 'atento' ? 0.22 : nome === 'curioso' ? 0.12 : nome === 'musica' ? Math.sin(t / 400) * 0.04 : 0
-  inclinacao = lerp(inclinacao, alvoIncl, vo)
-
-  g = palco ? gF : gTela
-  g.clearRect(0, 0, 240, 240)
-  g.save()
-  let ox = olhar.x * 20 + (ge.ox || 0), oy = olhar.y * 14 + cur.dy - balanco * 9 + (ge.oy || 0)
-  const nf = nivelFrio(clima.temp)
-  if (nome === 'frio' || nf >= 2) ox += rnd(-1, 1) * (0.8 + nf * 0.5) // quanto mais frio, mais treme
-  if (dormindo && sono.rem?.tipo === 'pesadelo') ox += rnd(-1.2, 1.2)
-  if (dormindo) oy += Math.sin(t / 1200) * 2
-  const esc = ge.s || 1
-  g.translate(120 + ox, 104 + oy); g.rotate(inclinacao + (ge.rot || 0)); g.scale(esc, esc * (ge.sy || 1)); g.translate(-120, -104)
-  const cor = `rgb(${cur.color.map(Math.round).join(',')})`
-  const w = 54 * cur.size, h = 66 * cur.size * clamp(cur.open, 0.05, 1.3) * fecha
-  const fE = nome === 'olho_sonolento' ? 'fechado' : ge.forma || formaAtual, fD = ge.formaD || ge.forma || formaAtual
-  // Formas especiais também piscam (achatando na vertical).
-  const olho = (cx, ww, hh, lado, f) => {
-    if (f !== 'normal' && fecha < 0.99) { g.save(); g.translate(cx, 104); g.scale(1, Math.max(0.08, fecha)); g.translate(-cx, -104); desenharOlho(cx, 104, ww, hh, lado, cur, cor, f, t); g.restore() }
-    else desenharOlho(cx, 104, ww, hh, lado, cur, cor, f, t)
-  }
-  olho(74, w * (1 + cur.asym), h * (1 + cur.asym), -1, fE)
-  olho(166, w * (1 - cur.asym * 0.6), h * (1 - cur.asym * 0.6), 1, fD)
-  if (cur.bochecha > 0.05) { // bochechas coradas
-    g.fillStyle = `rgba(255,120,170,${0.8 * cur.bochecha})`
-    for (const bx of [58, 182]) { g.beginPath(); g.ellipse(bx, 146, 15, 7, 0, 0, Math.PI * 2); g.fill() }
-  }
-  if (cur.lagrimas > 0.05) { // lágrimas caindo
-    g.fillStyle = `rgba(108,200,255,${cur.lagrimas})`
-    for (const [bx, fase] of [[64, 0], [176, 0.5]]) {
-      const k = ((t / 900) + fase) % 1, y = 132 + k * 50
-      g.globalAlpha = cur.lagrimas * (1 - k); g.beginPath(); g.moveTo(bx, y - 7); g.quadraticCurveTo(bx + 6, y + 3, bx, y + 6); g.quadraticCurveTo(bx - 6, y + 3, bx, y - 7); g.fill()
-    }
-    g.globalAlpha = 1
-  }
-  // Boca
-  g.strokeStyle = cor; g.fillStyle = cor; g.lineWidth = 4; g.lineCap = 'round'
-  if (cur.mouthOpen > 0.12) { g.beginPath(); g.ellipse(120, 172, 9 + cur.mouthOpen * 4, 3 + cur.mouthOpen * 11, 0, 0, Math.PI * 2); g.fill() }
-  else { g.beginPath(); g.moveTo(104, 172); g.quadraticCurveTo(120, 172 + cur.mouth * 14, 136, 172); g.stroke() }
-  desenharAcessorios(t)
-  g.restore()
-
-  if (dormindo) desenharIcone('zzz', t)
-  else if (icone) desenharIcone(icone.tipo, t)
-  else if (nome === 'musica') desenharIcone('nota', t)
-  if (balao && t > balao.ate) balao = null
-  if (balao) desenharBalao(t)
-  desenharImaginacao(t)
-  desenharCarneiros(t)
-  desenharBicho(t)
-  if (dormindo && sono.rem?.hist) { // o sonho aparece clarinho perto do Zzz
-    const q = sono.rem.hist.quadros[Math.floor((t - sono.rem.t0) / 4000) % sono.rem.hist.quadros.length]
-    g.save(); g.globalAlpha = 0.45; q.icones.forEach((k, i) => desenharIconePx(k, 170 + i * 20, 84, 1)); g.restore()
-  }
-  g.save(); g.globalCompositeOperation = 'destination-over'; desenharCorHumor(); g.fillStyle = '#000'; g.fillRect(0, 0, 240, 240); g.restore() // fundo por trás de tudo
-  if (palco) { g = gTela; compor(t) }
-  desenharNevoa(t)
-  desenharMoldura(t)
-  if (modoFoco && modoFoco.fase !== 'espera') { // anel de progresso do foco/pausa
-    const p = clamp((t - modoFoco.ini) / (modoFoco.fim - modoFoco.ini), 0, 1)
-    g.save(); g.strokeStyle = modoFoco.fase === 'foco' ? 'rgba(125,249,255,.55)' : 'rgba(61,220,132,.7)'; g.lineWidth = 2.5
-    g.beginPath(); g.arc(120, 120, 115, -Math.PI / 2, -Math.PI / 2 + p * Math.PI * 2); g.stroke(); g.restore()
-  }
-  if (camera.ligada) { g.fillStyle = '#ff4d4d'; g.beginPath(); g.arc(14, 14, 4, 0, Math.PI * 2); g.fill() } // câmera ligada
-  if (!gravando && (vad.ativo || vad.verificando)) { g.fillStyle = vad.verificando ? 'rgba(255,214,102,.9)' : 'rgba(125,249,255,.9)'; g.beginPath(); g.arc(120, 230, 3 + Math.sin(t / 120) * 1, 0, Math.PI * 2); g.fill() }
-  if (gravando) { g.fillStyle = '#ff4d4d'; g.font = 'bold 11px system-ui'; g.fillText('● ouvindo', 26, 228) }
-
-}
-
-bus.on('beat', () => { balanco = 1 })
+bus.on('beat', () => batida(1))
 
 // ================================================================ C3: SONS FOFOS
 let actx = null
@@ -900,7 +702,7 @@ function ligarEscuta(src) {
     vad.chunks.push(x)
     if (rms > Math.max(0.004, vad.piso * 2)) vad.ultimaFala = t
     // "uhum": pausa curta no meio da sua frase → ele acena com a cabeça (sem som, para não atrapalhar)
-    if (papo.estado === 'conversando' && t - vad.ultimaFala > 350 && t - vad.ultimaFala < 520 && t - papo.ultimoAceno > 2500 && !gesto) { papo.ultimoAceno = t; gesto = { nome: 'aceno', t0: t } }
+    if (papo.estado === 'conversando' && t - vad.ultimaFala > 350 && t - vad.ultimaFala < 520 && t - papo.ultimoAceno > 2500 && !gesto) { papo.ultimoAceno = t; iniciarGesto('aceno', true) }
     if (gravando || jogo || audio.musica) { vad.ativo = false; vad.chunks = []; return } // começou outra coisa
     if (t - vad.ultimaFala > 1000 || t - vad.ini > 9000) fimDaFrase(t)
   }
@@ -1398,7 +1200,7 @@ function lerRosto(e, t) {
     imp.P = Math.min(imp.P + 0.008, 0.8) // enquanto você sorri, ele vai ficando contente
   } else if (rosto.sorriso < 0.3) rosto.sorrindo = false
   if (e.boca > 0.45 && e.sobrancelha > 0.45 && t - rosto.ultimaSurpresa > 15000 && !jogo) { rosto.ultimaSurpresa = t; bus.emit('cara_surpresa', { label: '' }) }
-  if (e.piscou > 0.55 && !rosto.piscando) { rosto.piscando = true; if (Math.random() < 0.2 + P.afeto * 0.3) setTimeout(() => (piscar = 1), rnd(120, 380)) }
+  if (e.piscou > 0.55 && !rosto.piscando) { rosto.piscando = true; if (Math.random() < 0.2 + P.afeto * 0.3) setTimeout(() => enviarC3('PISCAR'), rnd(120, 380)) }
   else if (e.piscou < 0.3) rosto.piscando = false
   rosto.hist.push([t, e.sorriso, e.franzido]); while (rosto.hist.length && rosto.hist[0][0] < t - 60000) rosto.hist.shift()
 }
@@ -1460,7 +1262,7 @@ bus.on('pessoa_saiu', () => evento({ label: `${cfg.dono} saiu`, P: -0.2 - P.afet
 // ================================================================ C3: TOQUE e CLIMA
 const clima = { temp: 26, umid: 55 }
 const toques = []
-cv.addEventListener('pointerdown', () => {
+function toque() { // "TOQUE x y" vindo do C3
   if (!actx) return
   if (tocaAqui) return acertouTocaAqui()
   if (alarme) return concluirAlarme('ok')
@@ -1469,7 +1271,7 @@ cv.addEventListener('pointerdown', () => {
   if (toques.length > 6) { evento({ label: 'muito cutucão!', P: -0.4, A: 0.5, D: 0.4, interesse: 0.8, expr: 'bravo', icone: 'exclamacao', som: 'bravo', gesto: 'nao', confianca: -0.03, dur: 2000 }); return }
   evento({ label: 'carinho na cabeça', P: 0.5, A: 0.15, interesse: 0.85, expr: Math.random() < 0.35 ? 'timido' : 'amor', icone: 'coracao', som: 'amor', gesto: Math.random() < 0.3 ? 'piscadela' : null, tipo: 'toque', social: 0.06, confianca: 0.005, dur: 2000 })
   P.afeto = clamp(P.afeto + 0.004, 0.05, 0.95)
-})
+}
 $('#temp').oninput = (e) => { clima.temp = +e.target.value; $('#tv').textContent = clima.temp; termo.prox = now() + 1500 }
 $('#umid').oninput = (e) => { clima.umid = +e.target.value; $('#hv').textContent = clima.umid; termo.prox = now() + 1500 }
 
@@ -1791,284 +1593,26 @@ async function refletir(forcar = false) {
 setInterval(() => refletir(), 300000)
 setTimeout(() => refletir(), 20000)
 
-// ================================================================ C3: PALCO (emotes, acessórios, moldura)
-// Pixel art original, escrita como texto: cada letra é uma cor. No robô de verdade, o mesmo
-// desenho vira um vetor RGB565 na flash do C3.
-const PALETA = { k: '#141018', q: '#2d3142', w: '#ffffff', y: '#ffd23f', o: '#ff9f1c', r: '#ff3b3b', d: '#a4161a', p: '#ff7eb6', b: '#3a86ff', c: '#7df9ff', a: '#a0e7ff', g: '#3ddc84', e: '#1b7f3b', n: '#8d5524', s: '#9aa5b1', l: '#d9e2ec', v: '#9b5de5', m: '#ffe5b4' }
-const NOME_COR = { k: 'preto', q: 'grafite', w: 'branco', y: 'amarelo', o: 'laranja', r: 'vermelho', d: 'vinho', p: 'rosa', b: 'azul', c: 'ciano', a: 'azul-claro', g: 'verde', e: 'verde-escuro', n: 'marrom', s: 'cinza', l: 'cinza-claro', v: 'roxo', m: 'bege' }
-const CARA = [
-  '.....kkkkkk.....', '...kkyyyyyykk...', '..kyyyyyyyyyyk..', '.kyyyyyyyyyyyyk.', '.kyyyyyyyyyyyyk.', 'kyyyyyyyyyyyyyyk', 'kyyyyyyyyyyyyyyk', 'kyyyyyyyyyyyyyyk',
-  'kyyyyyyyyyyyyyyk', 'kyyyyyyyyyyyyyyk', 'kyyyyyyyyyyyyyyk', '.kyyyyyyyyyyyyk.', '.kyyyyyyyyyyyyk.', '..kyyyyyyyyyyk..', '...kkyyyyyykk...', '.....kkkkkk.....',
-]
-// Pinta pontos por cima de um desenho base (e troca cores, se pedir).
-function pinta(base, pontos = [], troca = {}) {
-  const px = base.map((l) => [...l].map((ch) => troca[ch] || ch))
-  for (const [r, c, s] of pontos) for (let i = 0; i < s.length; i++) if (s[i] !== '.' && px[r] && c + i < px[r].length) px[r][c + i] = s[i]
-  return px.map((l) => l.join(''))
-}
-const lagrimas = [7, 8, 9, 10, 11, 12, 13].flatMap((r) => [[r, 3, 'b'], [r, 12, 'b']])
-const EMOTES = {
-  rindo: { anim: 'quicar', som: 'feliz', px: pinta(CARA, [[5, 4, 'k'], [6, 5, 'k'], [7, 4, 'k'], [5, 11, 'k'], [6, 10, 'k'], [7, 11, 'k'], [9, 3, 'kkkkkkkkkk'], [10, 3, 'kwwwwwwwwk'], [11, 4, 'krrrrrrk'], [12, 5, 'kkkkkk'], [6, 2, 'c'], [7, 1, 'c'], [8, 1, 'c'], [6, 13, 'c'], [7, 14, 'c'], [8, 14, 'c']]) },
-  apaixonado: { anim: 'pulsar', som: 'amor', px: pinta(CARA, [[4, 2, 'rr.rr'], [5, 2, 'rrrrr'], [6, 3, 'rrr'], [7, 4, 'r'], [4, 9, 'rr.rr'], [5, 9, 'rrrrr'], [6, 10, 'rrr'], [7, 11, 'r'], [9, 2, 'pp'], [9, 12, 'pp'], [10, 4, 'k'], [10, 11, 'k'], [11, 5, 'kkkkkk']]) },
-  chorando: { anim: 'tremer', som: 'triste', px: pinta(CARA, [[6, 3, 'kkk'], [6, 10, 'kkk'], [10, 5, 'kkkkkk'], [11, 4, 'k'], [11, 11, 'k'], ...lagrimas]) },
-  bravo: { anim: 'tremer', som: 'bravo', px: pinta(CARA, [[4, 3, 'kk'], [5, 5, 'kk'], [5, 9, 'kk'], [4, 11, 'kk'], [6, 4, 'kk'], [7, 4, 'kk'], [6, 10, 'kk'], [7, 10, 'kk'], [10, 4, 'k'], [10, 11, 'k'], [11, 5, 'kkkkkk'], [2, 10, 'y.y'], [3, 11, 'y']], { y: 'r' }) },
-  surpreso: { anim: 'pop', som: 'surpreso', px: pinta(CARA, [[3, 4, 'kk'], [3, 10, 'kk'], [5, 4, 'kk'], [6, 4, 'kk'], [5, 10, 'kk'], [6, 10, 'kk'], [9, 7, 'kk'], [10, 6, 'kkkk'], [11, 6, 'kkkk'], [12, 7, 'kk']]) },
-  legal: { anim: 'balancar', som: 'contente', px: pinta(CARA, [[5, 2, 'qqqqqqqqqqqq'], [6, 3, 'qqqq'], [6, 9, 'qqqq'], [7, 4, 'qq'], [7, 10, 'qq'], [6, 4, 'w'], [6, 10, 'w'], [10, 10, 'k'], [11, 5, 'kkkkk']]) },
-  tonto: { anim: 'girar', som: 'curioso', px: pinta(CARA, [[5, 4, 'k.k'], [6, 5, 'k'], [7, 4, 'k.k'], [5, 9, 'k.k'], [6, 10, 'k'], [7, 9, 'k.k'], [10, 4, 'k.k.k.k'], [11, 5, 'k.k.k']]) },
-  sono: { anim: 'flutuar', som: 'sono', px: pinta(CARA, [[6, 3, 'kkk'], [6, 10, 'kkk'], [10, 7, 'kk'], [11, 7, 'kk']]) },
-  frio: { anim: 'tremer', som: 'frio', px: pinta(CARA, [[5, 4, 'kk'], [6, 4, 'kk'], [5, 10, 'kk'], [6, 10, 'kk'], [8, 7, 'rr'], [9, 4, 'kkkkkkkk'], [10, 4, 'kwkwkwkk'], [11, 4, 'kkkkkkkk']], { y: 'a' }) },
-  calor: { anim: 'flutuar', som: 'calor', px: pinta(CARA, [[6, 3, 'kkk'], [6, 10, 'kkk'], [7, 4, 'k'], [7, 11, 'k'], [10, 5, 'kkkkkk'], [11, 6, 'pp'], [12, 6, 'pp'], [2, 12, 'c'], [3, 12, 'c'], [3, 13, 'c']], { y: 'o' }) },
-  assustado: { anim: 'tremer', som: 'medo', px: pinta(CARA, [[4, 3, 'www'], [5, 3, 'wkw'], [6, 3, 'www'], [4, 10, 'www'], [5, 10, 'wkw'], [6, 10, 'www'], [10, 4, 'k.k.k.k'], [11, 5, 'k.k.k'], [2, 2, 'c'], [3, 1, 'c']], { y: 'l' }) },
-  coracao: { anim: 'pulsar', som: 'amor', px: ['................', '..kkkk....kkkk..', '.krrrrk..krrrrk.', 'krrwrrrkkrrrrrrk', 'krwrrrrrrrrrrrrk', 'krrrrrrrrrrrrrrk', 'krrrrrrrrrrrrrrk', '.krrrrrrrrrrrrk.', '..krrrrrrrrrrk..', '...krrrrrrrrk...', '....krrrrrrk....', '.....krrrrk.....', '......krrk......', '.......kk.......', '................', '................'] },
-  estrela: { anim: 'girar', som: 'feliz', px: ['.......kk.......', '......kyyk......', '......kyyk......', '.....kyyyyk.....', 'kkkkkkyyyykkkkkk', 'kyyyyyyyyyyyyyyk', '.kyyyykyykyyyyk.', '..kyyyyyyyyyyk..', '...kyyyyyyyyk...', '...kyyyyyyyyk...', '..kyyyykkyyyyk..', '..kyyyk..kyyyk..', '.kyyyk....kyyyk.', '.kyyk......kyyk.', '.kkk........kkk.', '................'] },
-  interrogacao: { anim: 'balancar', som: 'curioso', px: ['....kkkkkkkk....', '...kcccccccck...', '..kcccckkcccck..', '..kcck....kcck..', '...kk.....kcck..', '..........kcck..', '.........kcck...', '.......kkcck....', '......kccck.....', '......kcck......', '......kcck......', '......kkkk......', '................', '......kkkk......', '......kcck......', '......kkkk......'] },
-  exclamacao: { anim: 'pop', som: 'surpreso', px: ['......kkkk......', '......kyyk......', '......kyyk......', '......kyyk......', '......kyyk......', '......kyyk......', '......kyyk......', '......kyyk......', '......kyyk......', '.......kk.......', '................', '......kkkk......', '......kyyk......', '......kkkk......', '................', '................'] },
-  fogo: { anim: 'tremer', som: 'bravo', px: ['.......k........', '......kok.......', '......korok.....', '.....korrok.....', '....korrrok..k..', '...korryyrrok...', '..korryyyyrrok..', '..koryyyyyyrok..', '.korryywwyyrrok.', '.koryywwwwyyrok.', '.koryywwwwyyrok.', '.korryywwyyrrok.', '..korryyyyrrok..', '...korrrrrrok...', '.....kkkkkk.....', '................'] },
-  gelo: { anim: 'tremer', som: 'frio', px: ['................', '..kkkkkkkkkkkk..', '..kwaaaaaaaaak..', '..kwaaaaaaaaak..', '..kaaaaaaaaaak..', '..kaakaaaakaak..', '..kaakaaaakaak..', '..kaaaaaaaaaak..', '..kaaakkkkaaak..', '..kaaaaaaaaaak..', '..kaaaaaaaaaak..', '..kkkkkkkkkkkk..', '...c..c...c.....', '.......c........', '................', '................'] },
-  nota: { anim: 'balancar', som: 'musica', px: ['........kk......', '........kck.....', '........kcck....', '........kccck...', '........kckcck..', '........kck.kck.', '........kck..kk.', '........kck.....', '........kck.....', '.....kkkkck.....', '....kcccccck....', '...kcccccccck...', '...kcccccccck...', '....kcccccck....', '.....kkkkkk.....', '................'] },
-  fantasma: { anim: 'flutuar', som: 'medo', px: ['.....kkkkkk.....', '...kkwwwwwwkk...', '..kwwwwwwwwwwk..', '.kwwwwwwwwwwwwk.', '.kwwkkwwwwkkwwk.', '.kwwkkwwwwkkwwk.', '.kwwwwwwwwwwwwk.', '.kwwwwwkkwwwwwk.', '.kwwwwkllkwwwwk.', '.kwwwwwkkwwwwwk.', '.kwwwwwwwwwwwwk.', '.kwwwwwwwwwwwwk.', '.kwwwwwwwwwwwwk.', '.kwwkkwwkkwwkkk.', '.kk..kk..kk..k..', '................'] },
-  presente: { anim: 'quicar', som: 'feliz', px: ['....kk....kk....', '...krrk..krrk...', '....krrkkrrk....', '.kkkkkkkkkkkkkk.', '.kbbbbbrrbbbbbk.', '.kbbbbbrrbbbbbk.', '.kkkkkkkkkkkkkk.', '..kbbbbrrbbbbk..', '..kbbbbrrbbbbk..', '..kbbbbrrbbbbk..', '..kbbbbrrbbbbk..', '..kbbbbrrbbbbk..', '..kbbbbrrbbbbk..', '..kkkkkkkkkkkk..', '................', '................'] },
-  lua: { anim: 'flutuar', som: 'sono', px: ['.....kkkkk......', '...kkyyyk.......', '..kyyyk.........', '.kyyyk..........', '.kyyk...........', 'kyyyk...........', 'kyyyk...........', 'kyyyk...........', 'kyyyyk..........', '.kyyyyk.......k.', '.kyyyyykk...kyk.', '..kyyyyyykkkyk..', '...kkyyyyyyyk...', '.....kkkkkkk....', '................', '................'] },
-}
-EMOTES.coracao_partido = { anim: 'cair', som: 'triste', px: pinta(EMOTES.coracao.px, [[3, 8, 'k'], [4, 7, 'k'], [5, 8, 'k'], [6, 7, 'k'], [7, 8, 'k'], [8, 7, 'k'], [9, 8, 'k'], [10, 7, 'k']]) }
-
-// Acessórios: desenhados por cima do rosto e acompanham os movimentos dele.
-const GORRO = ['.......kk.......', '......kwwk......', '....kkkkkkkk....', '..kkbbbbbbbbkk..', '.kbbbbbbbbbbbbk.', 'kbbbbbbbbbbbbbbk', 'kwwwwwwwwwwwwwwk', 'kkkkkkkkkkkkkkkk']
-const ACESS = {
-  cachecol: { x: 120, y: 216, e: 8, px: ['kkkkkkkkkkkkkkkkkkkkkkkk', 'krrwwrrwwrrwwrrwwrrwwrrk', 'kkkkkkkkkkkkkkkkkkkkkkkk', '................krwk....', '................kwrk....', '................krwk....', '................kkkk....'] },
-  gorro: { x: 120, y: 32, e: 10, px: GORRO },
-  touca: { x: 120, y: 32, e: 10, px: pinta(GORRO, [], { b: 'v' }) },
-  noel: { x: 120, y: 34, e: 10, px: ['............kk..', '...........kwwk.', '.........kkrkwwk', '.......kkrrrrkk.', '.....kkrrrrrrk..', '...kkrrrrrrrrk..', '..krrrrrrrrrrrk.', 'kwwwwwwwwwwwwwwk', 'kkkkkkkkkkkkkkkk'] },
-  oculos: { x: 120, y: 100, e: 8, px: ['ssssssssssssssssssssss', '.qqqwqqqq....qqqwqqqq.', '..qqqqqq......qqqqqq..', '...qqqq........qqqq...'] },
-  nariz: { x: 120, y: 142, e: 4, px: ['.kk.', 'krrk', 'krrk', '.kk.'] },
-  lingua: { x: 120, y: 186, e: 5, px: ['kppk', 'kppk', '.kk.'] },
-  leque: { x: 214, y: 150, e: 4, anim: 'abanar', px: ['p.p.p.p.p', 'ppppppppp', '.ppppppp.', '..ppppp..', '...ppp...', '....n....', '....n....'] },
-  fone: { x: 120, y: 66, e: 9, px: ['........kkkkkkkk........', '.....kkkqqqqqqqqkkk.....', '....kqq..........qqk....', '...kq..............qk...', '..kq................qk..', '..kq................qk..', '.kq..................qk.', 'kkkk................kkkk', 'krrk................krrk', 'krrk................krrk', 'krrk................krrk', 'kkkk................kkkk'] },
-  chapeu: { x: 168, y: 22, e: 4, px: ['....y....', '....p....', '...ppp...', '...pyp...', '..ppppp..', '..pbppp..', '.ppppypp.', '.ppppppp.', 'pppbppppp', 'ppppppypp', 'yyyyyyyyy'] },
-  guarda_chuva: { x: 120, y: 22, e: 11, px: ['......kkkk......', '....kkbbbbkk....', '..kkbbbbbbbbkk..', '.kbbbbbbbbbbbbk.', 'kbbbbbbbbbbbbbbk', 'kkkkkkkkkkkkkkkk'] },
-}
-const CARNEIRO = ['.wwwww....', 'wwwwwwwkk.', 'wwwwwwwkkk', 'wwwwwwwkk.', '.wwwwww...', '.k.k..k.k.', '.k.k..k.k.']
-
-function desenharSprite(px, cx, cy, e, troca = null, alpha = 1) {
-  const h = px.length, w = px[0].length
-  g.save(); g.globalAlpha *= alpha
-  for (let r = 0; r < h; r++) for (let c = 0; c < w; c++) {
-    let ch = px[r][c]; if (ch === '.') continue
-    if (troca && troca[ch]) ch = troca[ch]
-    g.fillStyle = PALETA[ch] || ch
-    g.fillRect(cx + (c - w / 2) * e, cy + (r - h / 2) * e, e + 0.4, e + 0.4)
-  }
-  g.restore()
-}
-
-// Emote: o rosto sai com um efeito, o emote aparece animado e o rosto volta com outro efeito.
-let palco = null
-const SAIDAS = ['pixel', 'tv', 'giro', 'glitch', 'deslizar']
+// ================================================================ S3: PALCO (emotes, acessórios, moldura)
+// Quem desenha é o C3 (c3.js). Aqui o cérebro só decide o que mostrar e até quando.
+let palco = null // {emote, dur, saida, volta, lado, px?, desenho?, ate}
 const sorteia = (l) => l[Math.floor(Math.random() * l.length)]
 let ultimoEmote = -1e9
 function mostrarEmote(nome, dur = 1900, op = {}) {
   if (!(EMOTES[nome] || op.px) || palco || dormindo) return false
-  palco = { emote: nome, t0: now(), dur, saida: op.saida || sorteia(SAIDAS), volta: op.volta || sorteia(SAIDAS), lado: Math.random() < 0.5 ? -1 : 1, px: op.px, desenho: op.desenho }
+  palco = { emote: nome, dur, saida: op.saida || sorteia(SAIDAS), volta: op.volta || sorteia(SAIDAS), lado: Math.random() < 0.5 ? -1 : 1, px: op.px, desenho: op.desenho, ate: now() + 340 + dur + 420 }
   ultimoEmote = now()
   setTimeout(() => somDe(op.desenho ? 'feliz' : EMOTES[nome].som, 0.6), 330)
   bus.emit('emote', { label: `${nome} (${palco.saida} → ${palco.volta})` }, 'C3')
   return true
 }
-const cvF = document.createElement('canvas'); cvF.width = cvF.height = 480
-const gF = cvF.getContext('2d'); gF.setTransform(2, 0, 0, 2, 0, 0)
-const cvP = document.createElement('canvas'), gP = cvP.getContext('2d')
-function compor(t) {
-  const k = t - palco.t0, S = 340, V = 420, E = palco.dur
-  g.fillStyle = '#000'; g.fillRect(0, 0, 240, 240)
-  if (k < S) efeito(palco.saida, k / S)
-  else if (k < S + E) desenharEmote(palco.emote, k - S, E)
-  else if (k < S + E + V) efeito(palco.volta, 1 - (k - S - E) / V)
-  else { efeito('pixel', 0); palco = null }
-}
-// p = 0: rosto inteiro; p = 1: rosto sumiu.
-function efeito(tipo, p) {
-  p = clamp(p, 0, 1)
-  g.save()
-  if (tipo === 'pixel') {
-    const n = Math.max(6, Math.round(240 * Math.pow(1 - p, 2.2)))
-    cvP.width = cvP.height = n; gP.imageSmoothingEnabled = true; gP.drawImage(cvF, 0, 0, n, n)
-    g.imageSmoothingEnabled = false; g.globalAlpha = 1 - p * p; g.drawImage(cvP, 0, 0, 240, 240); g.imageSmoothingEnabled = true
-  } else if (tipo === 'tv') {
-    if (p < 0.7) { const sy = Math.max(0.02, 1 - p / 0.7); g.translate(0, 120 * (1 - sy)); g.scale(1, sy); g.drawImage(cvF, 0, 0, 240, 240) }
-    else { const sx = 1 - (p - 0.7) / 0.3; g.fillStyle = '#e8f6ff'; g.fillRect(120 - 120 * sx, 119, 240 * sx, 2) }
-  } else if (tipo === 'giro') {
-    g.translate(120, 120); g.rotate(p * Math.PI * 2); g.scale(1 - p, 1 - p); g.translate(-120, -120); g.drawImage(cvF, 0, 0, 240, 240)
-  } else if (tipo === 'glitch') {
-    for (let y = 0; y < 240; y += 12) {
-      const dx = (Math.random() - 0.5) * p * 90
-      g.globalAlpha = 1 - p * 0.9; g.drawImage(cvF, 0, y * 2, 480, 24, dx, y, 240, 12)
-      if (Math.random() < p) { g.globalCompositeOperation = 'lighter'; g.globalAlpha = 0.3; g.drawImage(cvF, 0, y * 2, 480, 24, dx + 4, y, 240, 12); g.globalCompositeOperation = 'source-over' }
-    }
-  } else if (tipo === 'derreter') {
-    for (let x = 0; x < 240; x += 6) {
-      const queda = p * (60 + ((x * 37) % 23) * 6)
-      g.globalAlpha = 1 - p * 0.8; g.drawImage(cvF, x * 2, 0, 12, 480, x, queda, 6, 240)
-    }
-  } else { // deslizar
-    g.translate((palco?.lado || 1) * p * 260, 0); g.drawImage(cvF, 0, 0, 240, 240)
-  }
-  g.restore()
-}
-function desenharEmote(nome, k, E) {
-  const em = palco?.px ? { px: palco.px, anim: palco.desenho ? 'revelar' : 'pulsar' } : EMOTES[nome]
-  const ent = clamp(k / 240, 0, 1), sai = clamp((E - k) / 220, 0, 1)
-  const pop = ent < 1 ? 1 + 2.7 * Math.pow(ent - 1, 3) + 1.7 * Math.pow(ent - 1, 2) : 1
-  let s = 9 * pop * (sai < 1 ? sai : 1), x = 120, y = 122, rot = 0
-  if (em.anim === 'pulsar') s *= 1 + 0.08 * Math.sin(k / 110)
-  if (em.anim === 'quicar') y -= Math.abs(Math.sin(k / 170)) * 16
-  if (em.anim === 'tremer') { x += rnd(-2.5, 2.5); y += rnd(-1.5, 1.5) }
-  if (em.anim === 'girar') rot = Math.sin(k / 300) * 0.5
-  if (em.anim === 'balancar') rot = Math.sin(k / 250) * 0.2
-  if (em.anim === 'flutuar') y += Math.sin(k / 380) * 7
-  if (em.anim === 'cair' && k > E * 0.5) { y += Math.pow((k - E * 0.5) / (E * 0.5), 2) * 40; rot = (k - E * 0.5) / E * 0.6 }
-  g.save(); g.translate(x, y); g.rotate(rot)
-  if (em.anim === 'revelar') { // desenho aparecendo pixel por pixel, como se ele estivesse pintando
-    const n = Math.floor(256 * clamp(k / (E * 0.45), 0, 1)), e = 9 * (sai < 1 ? sai : 1)
-    for (let i = 0; i < n; i++) { const r = i >> 4, c = i & 15, ch = em.px[r][c]; if (ch === '.') continue; g.fillStyle = PALETA[ch]; g.fillRect((c - 8) * e, (r - 8) * e, e + 0.4, e + 0.4) }
-  } else desenharSprite(em.px, 0, 0, Math.max(0.5, s))
-  g.restore()
-  // brilhinhos de pixel em volta
-  g.fillStyle = '#e8f6ff'
-  for (let i = 0; i < 6; i++) { const a = i / 6 * Math.PI * 2 + k / 700, r = 92 + Math.sin(k / 160 + i) * 6; g.globalAlpha = 0.5 + 0.5 * Math.sin(k / 120 + i * 2); g.fillRect(120 + Math.cos(a) * r - 2, 122 + Math.sin(a) * r - 2, 4, 4) }
-  g.globalAlpha = 1
-}
-
 // Acessórios vestidos agora (nome → desde quando).
 const vestido = {}
 function vestir(nome, sim) {
   if (sim && !vestido[nome]) { vestido[nome] = now(); pushLog('C3→ vestiu ' + nome) }
   else if (!sim && vestido[nome]) { delete vestido[nome]; pushLog('C3→ tirou ' + nome) }
 }
-function desenharAcessorios(t) {
-  for (const nome of ['cachecol', 'nariz', 'lingua', 'oculos', 'gorro', 'touca', 'noel', 'fone', 'chapeu', 'guarda_chuva', 'leque']) {
-    if (!vestido[nome]) continue
-    const a = ACESS[nome], ent = clamp((t - vestido[nome]) / 400, 0, 1)
-    g.save(); g.translate(a.x, a.y - (1 - ent) * 30); g.globalAlpha = ent
-    if (a.anim === 'abanar') { g.translate(0, 14); g.rotate(Math.sin(t / 90) * 0.45); g.translate(0, -14) }
-    desenharSprite(a.px, 0, 0, a.e)
-    g.restore()
-  }
-}
-
-// ---------------------------------------------------------------- moldura decorada (datas comemorativas)
-const ELEMENTOS = ['arvore', 'luzes', 'neve', 'bandeirinhas', 'confete', 'serpentina', 'fogos', 'aboboras', 'fantasmas', 'coracoes', 'baloes', 'estrelas', 'fogueira', 'ovos', 'flores']
-const MINI = {
-  abobora: ['...ee...', '.oooooo.', 'ookookoo', 'oooooooo', 'okkkkkko', '.oooooo.'],
-  fantasminha: ['..wwww..', '.wwwwww.', 'wwkwwkww', 'wwwwwwww', 'wwwkkwww', 'wwwwwwww', 'w.ww.ww.'],
-  coracao: ['.rr.rr.', 'rrrrrrr', 'rrrrrrr', '.rrrrr.', '..rrr..', '...r...'],
-  balao: ['.rrrr.', 'rrwrrr', 'rrrrrr', 'rrrrrr', '.rrrr.', '..rr..', '...s..', '..s...', '...s..'],
-  estrela: ['..y..', '.yyy.', 'yyyyy', '.yyy.', '..y..'],
-  fogueira: ['...r....', '..ror...', '.royor..', '.royyor.', 'rooyyoor', '.nnnnnn.', 'nn.nn.nn'],
-  ovo: ['.ppp.', 'ppppp', 'yyyyy', 'ppppp', 'bbbbb', 'ppppp', '.ppp.'],
-  flor: ['.p.p.', 'ppypp', '.p.p.', '..g..', '.gg..'],
-  arvore: ['....y....', '....g....', '...ggg...', '..ggrgg..', '...ggg...', '..ggggg..', '.ggbgggg.', '..ggggg..', '.gggggyg.', 'ggrgggggg', '....n....', '...nnn...'],
-}
-const cor = (cs, i, padrao) => { const l = cs?.length ? cs : padrao; return PALETA[l[i % l.length]] }
-const tr = (cs, i, de) => (cs?.length ? { [de]: cs[i % cs.length] } : null)
-function perimetro(passo) {
-  const p = []
-  for (let x = 8; x <= 232; x += passo) p.push([x, 7], [x, 233])
-  for (let y = 8 + passo; y <= 232 - passo; y += passo) p.push([7, y], [233, y])
-  return p
-}
-const naBorda = (x, y) => x < 28 || x > 212 || y < 26 || y > 214
-const MOLDURA = {
-  luzes(t, cs) {
-    g.strokeStyle = '#2f5d3a'; g.lineWidth = 1.5; g.strokeRect(7, 7, 226, 226)
-    perimetro(20).forEach(([x, y], i) => {
-      const acesa = (Math.floor(t / 450) + i) % 3 !== 0
-      g.fillStyle = cor(cs, i, ['r', 'y', 'g', 'b', 'p']); g.globalAlpha = decoAlpha * (acesa ? 1 : 0.25)
-      g.fillRect(x - 3, y - 3, 6, 7); if (acesa) { g.globalAlpha = decoAlpha * 0.25; g.fillRect(x - 6, y - 6, 12, 13) }
-    })
-    g.globalAlpha = decoAlpha
-  },
-  neve(t, cs) {
-    g.fillStyle = cor(cs, 0, ['w'])
-    for (let i = 0; i < 46; i++) {
-      const x = (i * 53 + Math.sin(t / 900 + i) * 8 + 240) % 240, y = (t / 45 * (0.4 + (i % 5) / 6) + i * 37) % 240
-      if (naBorda(x, y)) g.fillRect(x, y, i % 3 ? 2 : 3, i % 3 ? 2 : 3)
-    }
-    for (let x = 0; x < 240; x += 4) g.fillRect(x, 236 - Math.abs(Math.sin(x / 17)) * 3, 4, 6)
-  },
-  bandeirinhas(t, cs) {
-    g.strokeStyle = '#d9e2ec'; g.lineWidth = 1; g.beginPath()
-    for (let x = 0; x <= 240; x += 4) g.lineTo(x, 9 + 7 * Math.sin(Math.PI * x / 240)); g.stroke()
-    for (let i = 0, x = 6; x < 236; x += 17, i++) {
-      const y = 9 + 7 * Math.sin(Math.PI * x / 240), bal = Math.sin(t / 400 + i) * 1.5
-      g.fillStyle = cor(cs, i, ['r', 'y', 'b', 'g', 'p', 'o'])
-      for (let r = 0; r < 5; r++) g.fillRect(x + r * 1.2 + bal, y + r * 3, 12 - r * 2.4, 3)
-    }
-  },
-  confete(t, cs) {
-    for (let i = 0; i < 44; i++) {
-      const x = (i * 71 + Math.sin(t / 500 + i) * 10 + 240) % 240, y = (t / 30 * (0.5 + (i % 4) / 5) + i * 29) % 240
-      if (!naBorda(x, y)) continue
-      g.fillStyle = cor(cs, i, ['r', 'y', 'b', 'g', 'p', 'v']); const gira = Math.abs(Math.sin(t / 150 + i))
-      g.fillRect(x, y, 4 * gira + 1, 4)
-    }
-  },
-  serpentina(t, cs) {
-    for (const [lado, i] of [[0, 0], [1, 1]]) {
-      g.fillStyle = cor(cs, i, ['y', 'p', 'c'])
-      for (let y = 0; y < 240; y += 3) { const x = (lado ? 228 : 8) + Math.sin(y / 12 + t / 500 + i) * 6; g.fillRect(x, y, 3, 3) }
-    }
-  },
-  fogos(t, cs) {
-    for (let j = 0; j < 2; j++) {
-      const ciclo = Math.floor((t + j * 800) / 1700), fase = ((t + j * 800) % 1700) / 1700
-      const x = 30 + ((ciclo * 97 + j * 131) % 180), y = 24 + ((ciclo * 53 + j * 31) % 28)
-      g.fillStyle = cor(cs, ciclo + j, ['y', 'r', 'c', 'p', 'g']); g.globalAlpha = decoAlpha * (1 - fase)
-      for (let i = 0; i < 10; i++) { const a = i / 10 * Math.PI * 2; g.fillRect(x + Math.cos(a) * fase * 22 - 1.5, y + Math.sin(a) * fase * 22 - 1.5, 3, 3) }
-    }
-    g.globalAlpha = decoAlpha
-  },
-  aboboras(t, cs) { [[18, 222], [222, 222], [18, 20], [222, 20]].forEach(([x, y], i) => desenharSprite(MINI.abobora, x, y + Math.sin(t / 600 + i) * 1.5, 3, tr(cs, i, 'o'))) },
-  fantasmas(t, cs) { [[22, 200], [218, 205]].forEach(([x, y], i) => desenharSprite(MINI.fantasminha, x + Math.sin(t / 700 + i) * 4, y + Math.sin(t / 450 + i * 2) * 6, 3, tr(cs, i, 'w'), 0.85)) },
-  coracoes(t, cs) {
-    for (let i = 0; i < 8; i++) { const x = i % 2 ? 222 - (i % 3) * 6 : 16 + (i % 3) * 6, y = 240 - ((t / 35 + i * 40) % 260); desenharSprite(MINI.coracao, x, y, 2, tr(cs, i, 'r'), 0.9) }
-  },
-  baloes(t, cs) { [[18, 205], [36, 214], [204, 212], [222, 202]].forEach(([x, y], i) => desenharSprite(MINI.balao, x + Math.sin(t / 800 + i) * 3, y + Math.sin(t / 500 + i) * 4, 3, tr(cs, i, 'r') || { r: ['r', 'b', 'y', 'g'][i] })) },
-  estrelas(t, cs) { perimetro(30).forEach(([x, y], i) => { const brilho = 0.3 + 0.7 * Math.abs(Math.sin(t / 500 + i * 1.7)); desenharSprite(MINI.estrela, x, y, 2, tr(cs, i, 'y'), brilho) }) },
-  fogueira(t, cs) { [[20, 222], [220, 222]].forEach(([x, y], i) => desenharSprite(MINI.fogueira, x, y, 3, Math.floor(t / 150 + i) % 2 ? { o: 'y', y: 'o' } : null)) },
-  ovos(t, cs) { [[16, 224], [30, 226], [212, 226], [226, 224]].forEach(([x, y], i) => desenharSprite(MINI.ovo, x, y, 2, tr(cs, i, 'p'))) },
-  arvore(t, cs) { [[22, 210], [218, 210]].forEach(([x, y], i) => desenharSprite(MINI.arvore, x, y, 3, Math.floor(t / 500 + i) % 2 ? { r: 'y', b: 'r', y: 'w' } : (cs?.length ? { g: cs[0] } : null))) },
-  flores(t, cs) { perimetro(34).forEach(([x, y], i) => desenharSprite(MINI.flor, x, y + Math.sin(t / 600 + i) * 1, 2, tr(cs, i, 'p'))) },
-}
-let decoAlpha = 1, decoEntrada = 0
-function desenharMoldura(t) {
-  const els = [...(decoracaoAtual() || []), ...(now() < festaAte ? [{ el: 'baloes' }, { el: 'confete' }] : [])]; if (!els.length) return
-  decoAlpha = clamp((t - decoEntrada) / 1200, 0, 1)
-  g.save(); g.globalAlpha = decoAlpha
-  for (const d of els) MOLDURA[d.el]?.(t, d.cores)
-  g.restore()
-}
-
-// Tela embaçada (umidade alta): ele limpa com um paninho e ela embaça de novo devagar.
-const cvN = document.createElement('canvas'); cvN.width = cvN.height = 240
-const gN = cvN.getContext('2d')
-function desenharNevoa(t) {
-  const alvo = clima.umid >= 80 ? clamp((clima.umid - 75) / 20, 0, 1) : 0
-  termo.nevoa += (alvo - termo.nevoa) * 0.004
-  if (termo.nevoa < 0.03) return
-  if (termo.limpando) {
-    const p = (t - termo.limpando.t0) / 1800
-    if (p >= 1) termo.limpando = null
-    else termo.limpos.push({ x: 30 + 180 * p, y: 120 + Math.sin(p * Math.PI * 3) * 45, t })
-  }
-  termo.limpos = termo.limpos.filter((c) => t - c.t < 30000)
-  gN.globalCompositeOperation = 'source-over'; gN.clearRect(0, 0, 240, 240)
-  gN.fillStyle = `rgba(205,220,235,${0.42 * termo.nevoa})`; gN.fillRect(0, 0, 240, 240)
-  gN.globalCompositeOperation = 'destination-out'
-  for (const c of termo.limpos) { gN.globalAlpha = clamp(1 - (t - c.t) / 30000, 0, 1); gN.beginPath(); gN.arc(c.x, c.y, 26, 0, Math.PI * 2); gN.fill() }
-  gN.globalAlpha = 1
-  g.drawImage(cvN, 0, 0, 240, 240)
-  if (termo.limpando) { const c = termo.limpos[termo.limpos.length - 1]; if (c) desenharSprite(['llll', 'lsll', 'llll'], c.x, c.y, 5) }
-}
+let decoNova = false // pede para o C3 refazer a entrada da moldura
 
 // ================================================================ CONVERSA FLUIDA
 // Parado → atento ("será comigo?") → conversando → parado. Na conversa não precisa de nome:
@@ -2363,27 +1907,6 @@ function tickImaginacao() {
     if (q.frase) legendaSempre(q.frase, (a.hist.passo || 2300) + 400)
   }
 }
-function desenharImaginacao(t) {
-  const a = imag.ativo; if (!a) return
-  const q = a.hist?.quadros[Math.max(0, Math.floor((t - a.t0) / (a.hist?.passo || 2300)))]
-  g.save()
-  if (a.tipo === 'devaneio') {
-    g.fillStyle = '#e8f6ff'; g.globalAlpha = 0.92
-    for (const [x, y, r] of [[200, 82, 3], [209, 70, 5]]) { g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill() }
-    for (const [x, y, rx, ry] of [[150, 32, 30, 19], [178, 24, 30, 21], [206, 34, 26, 18], [174, 44, 42, 15]]) { g.beginPath(); g.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2); g.fill() }
-    g.globalAlpha = 1; g.textAlign = 'center'; g.textBaseline = 'middle'
-    if (q) q.icones.forEach((k, i) => desenharIconePx(k, 178 + (i - (q.icones.length - 1) / 2) * 25, 33, 1.3))
-    else { g.fillStyle = '#5b6b7b'; g.font = 'bold 22px system-ui'; g.fillText('.'.repeat(1 + Math.floor(t / 400) % 3), 178, 30) }
-  } else if (a.tipo === 'contando' && q && t >= a.t0) {
-    const n = a.hist.quadros.length, i = Math.floor((t - a.t0) / (a.hist.passo || 2300))
-    g.fillStyle = '#1b2632'; g.strokeStyle = '#7df9ff'; g.lineWidth = 2
-    g.beginPath(); g.roundRect(30, 4, 180, 48, 10); g.fill(); g.stroke()
-    q.icones.forEach((k, j) => desenharIconePx(k, 120 + (j - (q.icones.length - 1) / 2) * 34, 26, 1.6))
-    for (let j = 0; j < n; j++) { g.fillStyle = j <= i ? '#7df9ff' : '#3a4a5a'; g.fillRect(120 - n * 6 + j * 12, 46, 6, 3) }
-  }
-  g.restore()
-}
-
 // Sono: ciclos com fase REM (olhos se mexendo rápido). No REM ele sonha, ou tem pesadelo
 // (mais provável depois de um dia de sustos, solidão ou mau humor).
 const sono = { proxREM: Infinity, rem: null, touca: false, ultimoSonho: null, remDur: 180000 }
@@ -2402,7 +1925,7 @@ function tickSono() {
   if (!sono.rem && t > sono.proxREM && cfg.key) comecarREM()
   const r = sono.rem; if (!r) return
   // falar dormindo (bipes bem baixinhos) e mexidinhas
-  if (Math.random() < 0.04) { balanco = 0.4; somDe(r.tipo === 'pesadelo' ? 'triste' : 'contente', 0.12) }
+  if (Math.random() < 0.04) { batida(0.4); somDe(r.tipo === 'pesadelo' ? 'triste' : 'contente', 0.12) }
   if (t > r.ate) {
     sono.rem = null
     if (r.tipo === 'pesadelo' && Math.random() < 0.5) acordarDoPesadelo(r.hist)
@@ -2516,7 +2039,7 @@ function decorar(pedido = false) {
   for (const x of [...d.deco, ...sugs.flatMap((s) => s.elementos.map((el) => ({ el, cores: s.cores })))]) mapa.set(x.el, { el: x.el, cores: x.cores || [] })
   sugs.forEach((s) => (s.estado = 'usada'))
   P.deco = { chave: d.id + d.ano, data: d.id, elementos: [...mapa.values()].slice(0, 5), t: Date.now(), aprovado: null, perguntar: false }
-  store.set('pers', P); decoEntrada = now()
+  store.set('pers', P); decoNova = true
   pushLog(`Datas→ decorou para ${d.nome}: ${P.deco.elementos.map((e) => e.el).join(', ')}`)
   evento({ label: `decorei a tela para ${d.nome}${sugs.length ? ' (com a sua sugestão!)' : ''}`, P: 0.4, A: 0.4, interesse: 0.85, expr: 'orgulhoso', gesto: 'pulinhos', forcarGesto: true, dur: 3000, lembrar: 4 })
   setTimeout(() => perguntarDeco(), 3800)
@@ -2558,7 +2081,7 @@ function aplicarSugestao(sug) {
   const d = dataAtiva(); if (!d) return
   if (!P.deco || P.deco.chave !== d.id + d.ano) return decorar()
   for (const el of sug.elementos) { const i = P.deco.elementos.findIndex((x) => x.el === el); const item = { el, cores: sug.cores }; if (i >= 0) P.deco.elementos[i] = item; else P.deco.elementos.push(item) }
-  P.deco.elementos = P.deco.elementos.slice(-5); sug.estado = 'usada'; store.set('pers', P); decoEntrada = now()
+  P.deco.elementos = P.deco.elementos.slice(-5); sug.estado = 'usada'; store.set('pers', P); decoNova = true
   evento({ label: `coloquei sua ideia: ${sug.ideia}`, P: 0.35, A: 0.3, interesse: 0.7, expr: 'orgulhoso', gesto: 'pulinhos', forcarGesto: true, icones: ['ok', 'presente'], dur: 2500 })
 }
 async function pesquisarIdeia(sug) {
@@ -2589,16 +2112,6 @@ function ritualBoaNoite() {
   evento({ label: 'boa noite!', P: 0.3, A: -0.5, interesse: 0.5, expr: 'sono', gesto: 'bocejo', forcarGesto: true, icones: ['lua', 'dormir'], som: 'sono', dur: 3000 })
   carneirosAte = now() + 7000
   setTimeout(() => { if (!gravando) { dormir('boa noite'); sono.proxREM = now() + 20 * 60000 } }, 7200)
-}
-function desenharCarneiros(t) {
-  if (t > carneirosAte) return
-  const k = 7000 - (carneirosAte - t)
-  g.fillStyle = '#9aa5b1'; g.fillRect(112, 214, 4, 18); g.fillRect(124, 214, 4, 18); g.fillRect(108, 218, 24, 3) // cerquinha
-  for (let i = 0; i < 3; i++) {
-    const p = ((k - i * 2100) / 2100); if (p < 0 || p > 1) continue
-    desenharSprite(CARNEIRO, 30 + p * 180, 222 - Math.sin(p * Math.PI) * 34, 3)
-    if (p > 0.48 && p < 0.52) balao = { itens: [], numero: String(i + 1), t0: now(), ate: now() + 900 }
-  }
 }
 function comecarTocaAqui() {
   tocaAqui = { t0: now(), ate: now() + 2200 }
@@ -2830,7 +2343,7 @@ function brincRitmo() {
     const out = actx.createGain(); out.gain.value = 0.32; out.connect(actx.destination)
     const t0 = actx.currentTime + 0.1, tempos = [0]
     b.ints.forEach((i) => tempos.push(tempos[tempos.length - 1] + i))
-    tempos.forEach((ms) => { silaba(out, t0 + ms / 1000, 1500, 1150, 0.07, 'square', 0, 0.6); setTimeout(() => { balanco = 1 }, ms + 100) })
+    tempos.forEach((ms) => { silaba(out, t0 + ms / 1000, 1500, 1150, 0.07, 'square', 0, 0.6); setTimeout(() => { batida(1) }, ms + 100) })
     const dur = tempos[tempos.length - 1] + 200
     falandoAte = now() + dur + 350
     setTimeout(() => { if (brinc !== b) return; b.fase = 'ouvindo'; b.ini = now(); foco = { expr: 'ouvindo', ate: now() + 6000 }; mostrarBalao(['👏'], `${b.n}`, 6000) }, dur + 400)
@@ -2905,7 +2418,7 @@ function brincPPT() {
   const rodada = () => {
     if (brinc !== b) return
     b.fase = 'contando'
-    ;['pedra', 'papel', 'tesoura'].forEach((j, i) => setTimeout(() => { if (brinc !== b) return; mostrarBalao([EMOJI_JOGADA[j]], '', 800); somDe('neutro', 0.2); balanco = 1 }, i * 750))
+    ;['pedra', 'papel', 'tesoura'].forEach((j, i) => setTimeout(() => { if (brinc !== b) return; mostrarBalao([EMOJI_JOGADA[j]], '', 800); somDe('neutro', 0.2); batida(1) }, i * 750))
     setTimeout(() => { if (brinc !== b) return; b.fase = 'lendo'; b.votos = {}; b.ate = now() + 1300 }, 2250)
   }
   b.tick = () => {
@@ -2983,7 +2496,7 @@ function passoDanca() {
   if (!danca) return
   const PASSOS = ['sim', 'nao', 'talvez', 'pulinhos', 'aceno', 'surpresa', 'sim', 'talvez']
   if (!gesto) iniciarGesto(PASSOS[(danca.passos + Math.floor(Math.random() * 3)) % PASSOS.length])
-  balanco = 1; danca.passos++
+  batida(1); danca.passos++
   if (danca.passos >= danca.max || now() > danca.ate) {
     clearInterval(danca.interno); danca = null
     evento({ label: 'pose final da dança!', P: 0.4, A: 0.4, interesse: 0.7, expr: 'orgulhoso', gesto: 'dancinha', forcarGesto: true, dur: 2000, emote: 'legal' })
@@ -3172,17 +2685,7 @@ function talvezBomDia() {
   if (historiaParaContar()) setTimeout(() => contarHistoria(), P.local ? 11000 : 5000)
 }
 bus.on('pessoa_chegou', () => setTimeout(talvezBomDia, 3000))
-function desenharCorHumor() {
-  if (cfg.corHumor === false || dormindo) return
-  const p = emo.P, a = (emo.A + 1) / 2
-  const cor = p > 0.15 ? [255, Math.round(190 - p * 60), 90] : p < -0.15 ? [110, 120, 255] : [125, 249, 255]
-  const gr = g.createRadialGradient(120, 110, 20, 120, 110, 150)
-  gr.addColorStop(0, `rgba(${cor.join(',')},${(0.05 + 0.1 * a).toFixed(3)})`); gr.addColorStop(1, 'rgba(0,0,0,0)')
-  g.fillStyle = gr; g.fillRect(0, 0, 240, 240)
-}
-
 // ---------------------------------------------------------------- bichinho do terrário (sensor simulado até o C3 do terrário existir)
-const BICHO = ['..k.k..', '.rrkrr.', 'rkrkrkr', 'rrrkrrr', '.r.k.r.']
 const terrario = Object.assign({ temp: 24, umid: 70, ativo: true }, store.get('terrario', {}))
 const bicho = { ativo: false, x: -10, dir: 1, ate: 0, prox: now() + 4 * 60000, ultimoAlerta: 0 }
 function chamarBicho() { Object.assign(bicho, { ativo: true, dir: Math.random() < 0.5 ? 1 : -1, ate: now() + 22000 }); bicho.x = bicho.dir > 0 ? -10 : 250; pushLog('Bichinho do terrário→ passeando'); foco = { expr: 'curioso', ate: now() + 3000 } }
@@ -3196,13 +2699,6 @@ function tickBicho() {
     evento({ label: `o terrário tá seco (${terrario.umid} %)`, P: -0.2, A: 0.3, interesse: 0.7, expr: 'triste', gesto: 'nao_sei', forcarGesto: true, icones: ['planta', 'agua', 'pergunta'], numero: terrario.umid + '%', dur: 4000 })
   }
 }
-function desenharBicho(t) {
-  if (!bicho.ativo) return
-  bicho.x += bicho.dir * (terrario.umid < 50 ? 0.25 : 0.6)
-  if (bicho.x < -14 || bicho.x > 254) bicho.dir *= -1
-  desenharSprite(BICHO, bicho.x, 228 - Math.abs(Math.sin(t / 110)) * 1.5, 3, terrario.umid < 50 ? { r: 'd' } : null)
-}
-
 // ---------------------------------------------------------------- presentes, mêsversário, álbum de figurinhas
 function darPresente() {
   P.presenteDia = hojeSv(); store.set('pers', P)
@@ -3217,7 +2713,7 @@ const diasDeVida = () => Math.floor((Date.now() - P.nasceu) / 86400000)
 let festaAte = 0
 const PARABENS = [7, 7, 9, 7, 12, 11, 7, 7, 9, 7, 14, 12].map((st, i) => ({ st, d: [0.18, 0.12, 0.35, 0.35, 0.35, 0.6][i % 6] }))
 function fazerFesta(d = diasDeVida()) {
-  festaAte = now() + 3600000; vestir('chapeu', true); decoEntrada = now()
+  festaAte = now() + 3600000; vestir('chapeu', true); decoNova = true
   evento({ label: `${d} dias de vida! festa!`, P: 0.6, A: 0.6, interesse: 0.9, expr: 'empolgado', gesto: 'pulinhos', forcarGesto: true, icones: ['bolo', 'festa'], numero: `${d}d`, dur: 4000, emote: 'presente' })
   setTimeout(() => tocarMelodia(PARABENS, 1), 3500)
 }
@@ -3385,6 +2881,8 @@ $('#tMostrarEmote').onclick = () => { palco = null; if (dormindo) acordar(); mos
 $('#tDecorar').onclick = () => decorar(true)
 $('#tData').value = dataSim
 $('#tData').onchange = () => { dataSim = $('#tData').value; store.set('dataSim', dataSim); pushLog('Datas→ simulando ' + (dataSim || 'hoje')) }
+$('#tUartEnviar').onclick = () => { const l = $('#tUart').value.trim(); if (!l) return; if (l.startsWith('TOQUE')) receberDoC3(l); else enviarC3(l) }
+$('#tUart').onkeydown = (e) => { if (e.key === 'Enter') $('#tUartEnviar').click() }
 $('#tEsquecerSons').onclick = () => { sons = []; salvarSons(); pushLog('Sons→ esqueci todos os barulhos') }
 $('#tMelodia').onclick = () => tocarMelodia(P.melodia || melodiaInventada(), 1.1)
 $('#btnDebug').onclick = () => { $('#debug').hidden = !$('#debug').hidden; $('#cfg').hidden = true }
@@ -3449,7 +2947,11 @@ Mãos livres  : ${now() < vad.modoTVAte ? `modo TV (mais ${Math.ceil((vad.modoTV
 Jogo         : ${jogo.fase} · ${jogo.seq.length} notas` : ''}` + `
 Diversão     : ${brinc ? 'brincando de ' + brinc.tipo : '—'}${modoFoco ? ` · foco ${modoFoco.fase}${isFinite(modoFoco.fim) ? ' (' + Math.max(0, Math.ceil((modoFoco.fim - now()) / 60000)) + ' min)' : ''}` : ''}${alarme ? ' · ALARME tocando' : ''} · lembretes ${(P.lembretes || []).map((l) => hhmm(l.quando)).join(', ') || '—'} · álbum ${Object.keys(P.album || {}).length}/${FIGURINHAS.length} · desenhos ${(P.desenhos || []).length}
 Terrário     : ${terrario.temp} °C · ${terrario.umid} %${bicho.ativo ? ' · bichinho passeando' : ''} · ${diasDeVida()} dia(s) de vida${P.local ? ' · previsão: ' + (textoPrevisao() || 'carregando') : ''}
-Desempenho   : rosto ${perf.quadro.toFixed(1)} ms/quadro (${Math.round(perf.fps)} fps) · ouvido ${perf.ouvido.toFixed(2)} ms a cada 23 ms · tom ${perf.tom.toFixed(2)} ms
+Desempenho   : C3 tela ${c3.perf.quadro.toFixed(1)} ms/quadro (${Math.round(c3.perf.fps)} fps) · S3 cérebro ${perf.cerebro.toFixed(2)} ms a cada 50 ms · ouvido ${perf.ouvido.toFixed(2)} ms a cada 23 ms · tom ${perf.tom.toFixed(2)} ms
+UART S3→C3   : ${uart.taxaMsgs.toFixed(1)} msg/s · ${Math.round(uart.taxaBytes)} B/s (${(uart.taxaBytes / 921.6).toFixed(2)} % de 921600 baud) · total ${uart.msgs} msgs, ${(uart.bytes / 1024).toFixed(1)} KB · C3→S3 ${uart.volta} B
+Mais enviadas: ${Object.entries(uart.cont).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, v]) => k + ' ' + v).join(' · ')}
+Últimas UART :
+${uart.ultimas.map((l) => '  ' + l).join('\n')}
 Fôlego da IA : ${Math.round(folegoIA() * 100)}% (${sonoIA ? 'dormindo para recarregar' + (voltaDaIA() ? ', volta em ~' + voltaDaIA() : '') : nivelIA})
 IA hoje      : ${servidor.cotaTexto() || '—'}
 Log remoto   : ${!tokenLogValido(cfg.logToken) ? 'sem token' : logEnvio.erro ? 'erro: ' + logEnvio.erro : logEnvio.ultimo ? `enviado há ${Math.round((Date.now() - logEnvio.ultimo) / 60000)} min` : 'ainda não enviou'} · ${filaLog.length} linha(s) na fila`
@@ -3547,4 +3049,5 @@ function atualizar() {
 setInterval(conferirVersao, 3 * 60000); setTimeout(conferirVersao, 8000)
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden' && versaoNova) atualizar(); else if (document.visibilityState === 'visible') conferirVersao() })
 $('#btnAtualizar').onclick = () => atualizar()
-requestAnimationFrame(quadro)
+c3.ligar()
+setInterval(cicloCerebro, 50)

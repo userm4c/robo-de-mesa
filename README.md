@@ -19,14 +19,14 @@ Abra https://userm4c.github.io/robo-de-mesa/ no Chrome do Android e toque em "Ac
 - **Olhos especiais:** coração, estrela, espiral, X, fechadinhos de rir; bochechas coradas e lágrimas.
 - **Balão:** até 3 ícones (60 opções) ou um número curto (hora, temperatura).
 - **Conversa (🎤):** grava até 8 s, transcreve e decide a reação pelo Groq (chave em ⚙️, guardada só no celular). Ele sabe a hora, a temperatura e lembra as últimas falas.
-- **Depuração (🐞):** humor, emoção, BPM, tom, personalidade, temperatura e umidade simuladas (SHT40) o log das mensagens S3→C3 e testes de cada gesto, expressão e ícone.
+- **Depuração (🐞):** humor, emoção, BPM, tom, personalidade, temperatura e umidade simuladas (SHT40), tráfego da UART S3→C3 (mensagens por segundo, bytes, últimas linhas), campo para mandar uma linha direto à tela, desempenho de cada parte e testes de cada gesto, expressão e ícone.
 
 ## Fase 2 (08/11)
 
 - **Conversa fluida:** "Ei", "Olha pra mim", "Você está bem?" deixam ele atento ("será comigo?"); um "Sim" confirma e ele responde a frase original. Na conversa não precisa do nome; ele acena quando você pausa, pergunta de volta e espera.
 - **Aprende sons:** guarda a impressão digital do barulho que o assusta; depois de 3 sustos, toca o som (assustando-se consigo mesmo) e pergunta o que é. Com a explicação, perde o medo aos poucos.
 - **Imaginação:** devaneios (sozinho ou entediado), sonhos e pesadelos (fase REM, mais prováveis depois de um dia ruim), guardados para contar depois em quadrinhos de ícones.
-- **Palco pixelado:** 23 emotes de pixel art original que substituem o rosto, com transições (pixel, TV, giro, glitch, deslizar, derreter); acessórios (cachecol, gorro, Papai Noel, óculos, leque, guarda-chuva, touca).
+- **Palco pixelado:** 23 emotes de pixel art original que substituem o rosto, com transições (pixel, TV, zoom, glitch, deslizar, derreter); acessórios (cachecol, gorro, Papai Noel, óculos, leque, guarda-chuva, touca).
 - **Corpo térmico:** faixas de frio e calor com respostas variadas, palhaçadas conforme a personalidade (Papai Noel + Jingle Bells, modo verão), tela embaçada com umidade alta.
 - **Datas comemorativas:** decora a borda da tela sozinho (Natal, Ano-Novo, Carnaval, Páscoa, Namorados, Festa Junina, Crianças, Halloween, aniversários), pergunta se você gostou, guarda sugestões para a data certa e pesquisa ideias novas (groq/compound).
 - **Rituais:** boa noite (touca, bocejo, carneirinhos), "toca aqui", saudade proporcional ao tempo longe; pede atenção em degraus só quando está muito solitário.
@@ -37,6 +37,22 @@ Abra https://userm4c.github.io/robo-de-mesa/ no Chrome do Android e toque em "Ac
 - **Criatividade:** ele desenha pixel art pedida por voz (aparece pixel por pixel; galeria e desenho do dia), música do dia, segunda voz quando você assobia, dança no ritmo, diário do dia em quadrinhos, notícias em emojis.
 - **Rotina:** modo foco (Pomodoro com fone e anel de progresso), lembretes e despertador por voz ("me lembra de… às 18h", "daqui a 20 minutos", soneca com bronca), previsão do tempo (Open-Meteo, sem chave), bom dia completo, cor do humor no fundo.
 - **Vida:** bichinho do terrário (sensor simulado por enquanto), presentes surpresa, mêsversário com festa, álbum de 24 figurinhas.
+
+## Como o código está dividido (v22–v24)
+
+O protótipo já está separado do jeito que o robô de verdade vai ser:
+
+| Arquivo | Vai virar | O que faz |
+|---|---|---|
+| `robo.js` | firmware do **ESP32-S3** | cérebro: emoções, necessidades, ouvido, câmera, memória, jogos. Não desenha nada. |
+| `c3.js` | firmware do **ESP32-C3** | tela 240×240: rosto, gestos, balão, emotes, acessórios, moldura, névoa. Só desenha o que chega pela UART. |
+| `servidor.js` | gateway Node no **homelab** | toda a IA: modelos, cotas, cache, prompts, conversa, imaginação, desenho, pesquisa. |
+| `comum.js` | tabelas nos dois chips | ícones, cores, emotes, acessórios, expressões, duração dos gestos. |
+| `icones.js` | flash do C3 | 144 ícones 16×16 em 4 bits por pixel (≈21 KB), gerados por `ferramentas/gerar_icones.py`. |
+
+**Mensagens S3→C3** (uma linha de texto cada, só quando algo muda): `EXPR`, `OLHAR`, `ATENTO`, `SONO`, `TREME`, `GESTO`, `PISCAR`, `BATIDA`, `ICONE`, `BALAO`, `EMOTE`, `DESENHO`, `ACESS`, `MOLDURA`, `NEVOA`, `LIMPAR`, `HUMOR`, `NUVEM`, `PAINEL`, `SONHO`, `CARNEIROS`, `BICHO`, `ANEL`, `STATUS`. **C3→S3:** `TOQUE x y`. Com o rosto parado passa quase nada; conversando, umas 10–15 mensagens e ~130 bytes por segundo (0,1 % de uma UART a 921600 baud). A lista completa está no começo de `receber()` em `c3.js`.
+
+**Regras de desenho para caber no C3:** pixel art e retângulos não giram (inclinar a cabeça gira só os pontos de encaixe dos olhos e da boca); fundo liso tingido pelo humor em vez de degradê; máscaras dos olhos pintadas com a cor do fundo em vez de recortadas; névoa em pontilhado; transições sem girar nem misturar cores; texto numa fonte de pixel 5×7 própria.
 
 ## O que dá personalidade a ele
 
