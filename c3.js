@@ -103,7 +103,7 @@ export function criarC3(cv, op = {}) {
     expr: 'neutro', olhar: { modo: 'auto', x: 0, y: 0, amp: 0.8, tedio: false, fixoY: null }, atento: false, sono: false, treme: 0,
     icone: null, balao: null, palco: null, vestido: {}, moldura: [], decoT0: 0, nevoa: 0, limpando: null, limpos: [],
     humor: null, nuvem: null, painel: null, sonho: null, carneirosAte: 0, bicho: null, anel: null, status: {},
-    velha: null, copo: null, cor: null,
+    velha: null, copo: null, cor: null, matrix: null,
   }
   const cur = structuredClone(BASE)
   let formaAtual = 'normal', gesto = null, piscar = 0, proxPiscar = now() + 3000, balanco = 0, inclinacao = 0, tAnterior = now()
@@ -117,7 +117,7 @@ export function criarC3(cv, op = {}) {
   // MOLDURA elemento:cores;elemento:cores|- · NEVOA 0..1 · LIMPAR · HUMOR P A|- · NUVEM ic,ic|.|-
   // PAINEL quadro total ic,ic|- · SONHO ic,ic|- · CARNEIROS ms · BICHO x dir vel seco|- · ANEL fase total resta|-
   // STATUS câmera vad verificando gravando (4 dígitos) · VELHA casas(9: X, O ou .) última|- linha|- · VELHA -
-  // COPO copos meta ms · COR letra ms (círculo colorido do Genius)
+  // COPO copos meta ms · COR letra ms (círculo colorido do Genius) · MATRIX fase(baixar|instalar) porcentagem versão · MATRIX -
   function receber(linha) {
     perf.msgs++
     const i = linha.indexOf(' '), cmd = i < 0 ? linha : linha.slice(0, i), a = i < 0 ? '' : linha.slice(i + 1), p = a.split(' ')
@@ -159,6 +159,7 @@ export function criarC3(cv, op = {}) {
       case 'VELHA': tela.velha = a === '-' ? null : { c: (p[0] || '').padEnd(9, '.').slice(0, 9), ultima: p[1] && p[1] !== '-' ? +p[1] : -1, linha: lista(p[2]).map(Number), t0: t }; break
       case 'COPO': tela.copo = a === '-' ? null : { n: +p[0] || 0, meta: +p[1] || 8, t0: t, ate: t + (+p[2] || 6000) }; break
       case 'COR': tela.cor = PALETA[p[0]] ? { c: PALETA[p[0]], t0: t, ate: t + (+p[1] || 500) } : null; break
+      case 'MATRIX': tela.matrix = a === '-' ? null : { fase: p[0], pct: clamp(+p[1] || 0, 0, 100), versao: (p[2] || '').toUpperCase(), t0: tela.matrix?.t0 || t }; break
       case 'STATUS': tela.status = { cam: a[0] === '1', vad: a[1] === '1', verif: a[2] === '1', grav: a[3] === '1' }; break
       default: return false
     }
@@ -522,6 +523,32 @@ export function criarC3(cv, op = {}) {
     texto(`${c.n}/${c.meta}`, x + w / 2, y - 10, 2)
   }
 
+  // ---------------------------------------------------------------- atualização: chuva de letras e barra de progresso
+  // Só a fonte 5×7 e cores fixas (três tons de verde): nada de transparência, cabe no C3.
+  const COLS = 20, LETRAS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ:+-=<>#$%'
+  const chuva = Array.from({ length: COLS }, () => ({ y: rnd(-240, 0), vel: rnd(60, 160), letras: Array.from({ length: 18 }, () => LETRAS[Math.floor(Math.random() * LETRAS.length)]) }))
+  function desenharMatrix(t, dt) {
+    const m = tela.matrix
+    g.fillStyle = '#000'; g.fillRect(0, 0, 240, 240)
+    for (let c = 0; c < COLS; c++) {
+      const col = chuva[c]; col.y += col.vel * dt * (m.fase === 'instalar' ? 1.6 : 1)
+      if (col.y > 240 + 18 * 14) { col.y = rnd(-120, 0); col.vel = rnd(60, 160) }
+      if (Math.random() < 0.08) col.letras[Math.floor(Math.random() * 18)] = LETRAS[Math.floor(Math.random() * LETRAS.length)]
+      for (let k = 0; k < 18; k++) {
+        const y = col.y - k * 14; if (y < -10 || y > 250) continue
+        texto(col.letras[k], c * 12 + 6, y, 1.6, k === 0 ? '#d9ffe4' : k < 4 ? '#3ddc84' : k < 10 ? '#1f8f4e' : '#0f4d2a')
+      }
+    }
+    // caixa com o que está acontecendo
+    const titulo = m.fase === 'instalar' ? (m.pct >= 100 ? 'PRONTO!' : 'INSTALANDO') : 'BAIXANDO'
+    g.fillStyle = '#000'; g.fillRect(28, 92, 184, 62); g.strokeStyle = '#3ddc84'; g.lineWidth = 2; g.strokeRect(28, 92, 184, 62)
+    texto(`${titulo} ${m.versao}`, 120, 106, 2, '#d9ffe4')
+    g.fillStyle = '#0f4d2a'; g.fillRect(40, 122, 160, 12)
+    g.fillStyle = '#3ddc84'; for (let x = 0; x < Math.round(160 * m.pct / 100); x += 4) g.fillRect(40 + x, 122, 3, 12) // barra em bloquinhos
+    texto(`${Math.round(m.pct)}%`, 120, 144, 1.4, '#3ddc84')
+    if (Math.floor(t / 90) % 7 === 0) { g.fillStyle = '#3ddc84'; g.fillRect(0, Math.floor(Math.random() * 240), 240, 1) } // linha de "interferência"
+  }
+
   // ---------------------------------------------------------------- quadro
   function desenharQuadro() {
     const t = now(), dt = Math.min(0.1, (t - tAnterior) / 1000); tAnterior = t
@@ -626,6 +653,7 @@ export function criarC3(cv, op = {}) {
     const st = tela.status
     if (st.cam) { g.fillStyle = '#ff4d4d'; g.beginPath(); g.arc(14, 14, 4, 0, Math.PI * 2); g.fill() } // câmera ligada
     if (!st.grav && (st.vad || st.verif)) { g.fillStyle = st.verif ? '#ffd666' : '#7df9ff'; g.beginPath(); g.arc(120, 230, 3 + Math.sin(t / 120) * 1, 0, Math.PI * 2); g.fill() }
+    if (tela.matrix) desenharMatrix(t, dt)
     if (st.grav) { g.fillStyle = '#ff4d4d'; g.beginPath(); g.arc(30, 228, 4, 0, Math.PI * 2); g.fill(); texto('ouvindo', 40, 228, 2, '#ff4d4d', 'esquerda') }
   }
   function quadro() {

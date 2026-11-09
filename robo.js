@@ -27,7 +27,7 @@ const store = {
 }
 
 // ---------------------------------------------------------------- barramento
-const VERSAO = 'v28 · 09/11'
+const VERSAO = 'v29 · 09/11'
 const logLines = []
 const filaLog = [] // tudo o que aconteceu desde o último envio para o log remoto
 function pushLog(s) {
@@ -191,6 +191,7 @@ function evoluir(traco, d) { P[traco] = clamp(P[traco] + d, 0.05, 0.95) }
 // Evento: {label, P, A, D, interesse (0..1), expr, icone, som, dur, intens}
 const acontecimentos = [] // últimos fatos (não as conversas), para ele explicar o próprio humor
 function evento(e) {
+  if (e.falar) setTimeout(() => talvezFalar(e.falar), 450)
   const entediado = humor.A < -0.35 && emo.P < 0.3
   let ganho = entediado ? (e.interesse > 0.75 ? 1.4 : 0.3) : 1
   ganho *= 0.7 + P.sensibilidade * 0.6
@@ -811,7 +812,7 @@ async function fimDaFrase(t) {
   if (dur < 180 || vad.vozes < 2) { setTimeout(() => soltarMelodia(false)); if (dur >= 150) pushLog(`Mãos livres: descartei um som (${(dur / 1000).toFixed(1)} s, ${vad.vozes} trechos com voz)`); return } // barulho, não voz
   if (now() < vad.modoTVAte && dur > 2500) { setTimeout(() => soltarMelodia(false)); return } // TV/vídeo: só frases curtas ("Bob-e!")
   vad.hora = vad.hora.filter((x) => t - x < 3600000)
-  if (vad.hora.length >= 40) { setTimeout(() => soltarMelodia(false)); pushLog('Mãos livres: limite de 40 frases por hora (plano gratuito)'); return }
+  if (vad.hora.length >= 200) { setTimeout(() => soltarMelodia(false)); if (t - (vad.avisoLimite || 0) > 60000) { vad.avisoLimite = t; pushLog('Mãos livres: limite de 200 frases por hora') } return }
   vad.hora.push(t)
   vad.verificando = true
   let eraFala = false
@@ -845,7 +846,7 @@ async function fimDaFrase(t) {
     }
     if ((RE_ATENCAO.test(texto) || (RE_VOCE.test(texto) && texto.length < 70)) && !outraVoz && now() > vad.modoTVAte && agora - papo.ultimoAtento > 15000) return ficarAtento(texto)
     if (!outraVoz && palavras <= 18 && respostaLocal(texto)?.acao && /(vamos|bora|quero|me|mim|faz|fa[çc]a|brinc|jog|que m[úu]sica|canta|cante|cantarola|desenha)/i.test(texto)) { abrirConversa(); return await responder(texto, vh()) } // pedido de brincadeira é com ele
-    if (!outraVoz && (truqueDaFala(texto) || (medo.esperandoAte && RE_CARINHO_NOITE.test(texto)) || /\b(bebi|tomei)\b.*[áa]gua|\breguei\b/i.test(texto))) return await responder(texto, vh()) // truque, consolo e cuidados não precisam do nome
+    if (!outraVoz && (truqueDaFala(texto) || (medo.esperandoAte && RE_CARINHO_NOITE.test(texto)) || /\b(bebi|tomei|beber|tomar)\b.*[áa]gua|\breguei\b|atualiz/i.test(texto) || /^(fala|diz|repete)/i.test(texto))) return await responder(texto, vh()) // truque, consolo e cuidados não precisam do nome
     pushLog(`(ouviu, não era com ele${outraVoz ? ' · voz diferente' : ''}) ${texto.slice(0, 60)}`)
     contarOuvida()
   } catch (e) { pushLog('Mãos livres: ' + e.message) } finally { vad.verificando = false; soltarMelodia(eraFala) }
@@ -1298,7 +1299,7 @@ bus.on('pessoa_chegou', () => {
   const sumido = (now() - pessoa.saiuEm) / 1000
   if (sumido < 20) return
   const afeto = P.afeto
-  evento({ label: `${cfg.dono} chegou`, P: 0.3 + afeto * 0.5, A: 0.5, interesse: 0.85, expr: afeto > 0.65 ? 'apaixonado' : 'feliz', icone: afeto > 0.65 ? 'coracao' : null, som: afeto > 0.65 ? 'amor' : 'feliz', gesto: P.confianca > 0.35 ? 'pulinhos' : 'desconfiado', tipo: 'pessoa', social: 0.12, dur: 2500, lembrar: sumido > 1800 ? 3 : false })
+  evento({ label: `${cfg.dono} chegou`, falar: sabeFalar(`oi ${cfg.dono}`) && Math.random() < 0.6 ? `oi, ${cfg.dono}!` : 'oi!', P: 0.3 + afeto * 0.5, A: 0.5, interesse: 0.85, expr: afeto > 0.65 ? 'apaixonado' : 'feliz', icone: afeto > 0.65 ? 'coracao' : null, som: afeto > 0.65 ? 'amor' : 'feliz', gesto: P.confianca > 0.35 ? 'pulinhos' : 'desconfiado', tipo: 'pessoa', social: 0.12, dur: 2500, lembrar: sumido > 1800 ? 3 : false })
   evoluir('extroversao', 0.002)
 })
 bus.on('pessoa_saiu', () => evento({ label: `${cfg.dono} saiu`, P: -0.2 - P.afeto * 0.2, A: -0.1, interesse: 0.4, expr: 'triste', som: P.afeto > 0.6 ? 'triste' : false, dur: 2000 }))
@@ -1313,7 +1314,7 @@ function toque() { // "TOQUE x y" vindo do C3
   atencaoRecebida()
   const t = now(); toques.push(t); while (toques.length && t - toques[0] > 4000) toques.shift()
   if (toques.length > 6) { evento({ label: 'muito cutucão!', P: -0.4, A: 0.5, D: 0.4, interesse: 0.8, expr: 'bravo', icone: 'exclamacao', som: 'bravo', gesto: 'nao', confianca: -0.03, dur: 2000 }); return }
-  evento({ label: 'carinho na cabeça', P: 0.5, A: 0.15, interesse: 0.85, expr: Math.random() < 0.35 ? 'timido' : 'amor', icone: 'coracao', som: 'amor', gesto: Math.random() < 0.3 ? 'piscadela' : null, tipo: 'toque', social: 0.06, confianca: 0.005, dur: 2000 })
+  evento({ label: 'carinho na cabeça', falar: sorteia(['carinho!', 'obrigado!', 'feliz!', 'eba!']), P: 0.5, A: 0.15, interesse: 0.85, expr: Math.random() < 0.35 ? 'timido' : 'amor', icone: 'coracao', som: 'amor', gesto: Math.random() < 0.3 ? 'piscadela' : null, tipo: 'toque', social: 0.06, confianca: 0.005, dur: 2000 })
   P.afeto = clamp(P.afeto + 0.004, 0.05, 0.95)
 }
 $('#temp').oninput = (e) => { clima.temp = +e.target.value; $('#tv').textContent = clima.temp; termo.prox = now() + 1500 }
@@ -1536,7 +1537,8 @@ ELEMENTOS de decoração: ${ELEMENTOS.join(', ')}. CORES: ${Object.entries(NOME_
     const j = r.j, bruto = r.bruto
     const demora = (now() - tPergunta) / 1000
     if (demora > 30) { pushLog(`IA: resposta chegou atrasada (${Math.round(demora)} s); mostro sem fazer a ação "${j.acao || ''}"`); j.acao = '' }
-    if (/como funciona|como (se )?joga|quais (s[ãa]o )?as regras|me explica/i.test(text)) j.acao = '' // pergunta sobre o jogo: explica, não começa
+    if (/como funciona|como (se )?joga|quais (s[ãa]o )?as regras|me explica/i.test(text)) j.acao = ''
+    if (j.falar && demora < 15) setTimeout(() => talvezFalar(String(j.falar).slice(0, 40), 0.35), 1000) // pergunta sobre o jogo: explica, não começa
     pushLog(`IA (${servidor.curto(r.modelo || cfg.model)} · ${r.usage?.total_tokens ?? '?'} tokens${r.usage?.prompt_tokens_details?.cached_tokens ? `, ${r.usage.prompt_tokens_details.cached_tokens} do cache` : ''}): ${bruto.slice(0, 300)}`)
     const nome = EMOCOES.includes(j.emocao) ? j.emocao : 'curioso'
     const gest = GESTOS[j.gesto] ? j.gesto : 'nenhum'
@@ -1720,12 +1722,12 @@ function pedirAtencao() {
   pedido.ultimo = now()
   const n = pedido.nivel++
   if (n === 0) evento({ label: 'olhou pra você e suspirou', P: -0.05, interesse: 0.4, expr: 'triste', gesto: 'suspiro', forcarGesto: true, dur: 2500 })
-  else if (n === 1) evento({ label: 'bipes pedindo atenção', P: 0, A: 0.3, interesse: 0.5, expr: 'curioso', gesto: 'olhar_em_volta', icones: ['olhos', 'robo'], som: 'curioso', dur: 3000 })
-  else if (n === 2) evento({ label: 'quero atenção!', P: 0.05, A: 0.5, interesse: 0.6, expr: 'curioso', gesto: 'pulinhos', forcarGesto: true, icones: ['pessoa', 'pergunta', 'coracao'], dur: 3500 })
+  else if (n === 1) evento({ label: 'bipes pedindo atenção', falar: 'olha!', P: 0, A: 0.3, interesse: 0.5, expr: 'curioso', gesto: 'olhar_em_volta', icones: ['olhos', 'robo'], som: 'curioso', dur: 3000 })
+  else if (n === 2) evento({ label: 'quero atenção!', falar: sabeFalar(cfg.dono) ? `${cfg.dono}! brincar?` : 'atenção!', P: 0.05, A: 0.5, interesse: 0.6, expr: 'curioso', gesto: 'pulinhos', forcarGesto: true, icones: ['pessoa', 'pergunta', 'coracao'], dur: 3500 })
   else { pedido.nivel = 0; pedido.emburradoAte = now() + 20 * 60000; evento({ label: 'ninguém me deu atenção… emburrei', P: -0.3, A: -0.1, interesse: 0.5, expr: 'desconfiado', gesto: 'timido', forcarGesto: true, som: 'entediado', dur: 4000 }) }
 }
 function atencaoRecebida() {
-  if (pedido.nivel > 0 && now() - pedido.ultimo < 180000) evento({ label: 'finalmente atenção!', P: 0.5, A: 0.6, interesse: 0.9, expr: 'empolgado', gesto: 'pulinhos', forcarGesto: true, icones: ['coracao'], dur: 2500, emote: Math.random() < 0.4 ? 'apaixonado' : null })
+  if (pedido.nivel > 0 && now() - pedido.ultimo < 180000) evento({ label: 'finalmente atenção!', falar: 'eba!', P: 0.5, A: 0.6, interesse: 0.9, expr: 'empolgado', gesto: 'pulinhos', forcarGesto: true, icones: ['coracao'], dur: 2500, emote: Math.random() < 0.4 ? 'apaixonado' : null })
   pedido.nivel = 0; pedido.emburradoAte = Math.min(pedido.emburradoAte, now())
   P.ultimoContato = Date.now()
 }
@@ -1824,7 +1826,7 @@ function reagirSusto(s) {
     return evento({ label: `ah, é só ${s.significado}`, P: 0.05, A: 0.2, interesse: 0.4, tipo: 'susto_conhecido', expr: 'contente', gesto: 'olhar_em_volta', icones: s.icones?.length ? s.icones : ['ok'], som: false, dur: 2500 })
   }
   const k = clamp(0.35 + 0.65 * (s ? s.medo : 1), 0.3, 1)
-  evento({ label: s && s.vezes > 1 ? `aquele barulho de novo! (${s.vezes}ª vez)` : 'susto com barulho', P: -0.4 * k, A: 0.9 * k, D: -0.4 * k, interesse: 0.95, expr: 'medo', icone: 'exclamacao', som: 'medo', intens: k, gesto: 'encolher', tipo: 'susto', confianca: -0.01 * k, dur: 1800, emote: k > 0.8 && Math.random() < 0.3 ? 'assustado' : null })
+  evento({ label: s && s.vezes > 1 ? `aquele barulho de novo! (${s.vezes}ª vez)` : 'susto com barulho', P: -0.4 * k, A: 0.9 * k, D: -0.4 * k, interesse: 0.95, expr: 'medo', icone: 'exclamacao', som: 'medo', intens: k, gesto: 'encolher', tipo: 'susto', falar: 'medo!', confianca: -0.01 * k, dur: 1800, emote: k > 0.8 && Math.random() < 0.3 ? 'assustado' : null })
   sustosHoje++
   if (s && !s.significado && s.vezes >= 3 && Date.now() - (s.perguntouEm || 0) > 600000) setTimeout(() => perguntarSom(s), 4500)
 }
@@ -2171,7 +2173,7 @@ function cantarMusica() {
 function ritualBoaNoite() {
   if ((P.medoEscuro ?? 0) > 0) { P.medoEscuro = clamp(P.medoEscuro - 0.04, 0, 1); store.set('pers', P) } // boa noite com carinho tira um pouquinho do medo
   pararImaginacao(); sono.touca = true; vestir('touca', true)
-  evento({ label: 'boa noite!', P: 0.3, A: -0.5, interesse: 0.5, expr: 'sono', gesto: 'bocejo', forcarGesto: true, icones: ['lua', 'dormir'], som: 'sono', dur: 3000 })
+  evento({ label: 'boa noite!', falar: sabeFalar(`boa noite ${cfg.dono}`) ? `boa noite, ${cfg.dono}` : 'boa noite', P: 0.3, A: -0.5, interesse: 0.5, expr: 'sono', gesto: 'bocejo', forcarGesto: true, icones: ['lua', 'dormir'], som: 'sono', dur: 3000 })
   carneirosAte = now() + 7000
   setTimeout(() => { if (!gravando) { dormir('boa noite'); sono.proxREM = now() + 20 * 60000 } }, 7200)
 }
@@ -2240,6 +2242,7 @@ function acabarBrinc(motivo = '') { if (!brinc) return; const b = brinc; brinc =
 setInterval(() => { try { brinc?.tick?.(); tickAprenderCara() } catch (e) { pushLog('Brincadeira: ' + e.message) } }, 100)
 const ouviu = (t) => { pushLog(`Você: ${t}`); legenda(`Você: ${t}`) }
 function placarFinal(label, pontos, total, bom) {
+  if (bom) setTimeout(() => talvezFalar(sorteia(['legal!', 'eba!', 'uau!']), 0.2), 900)
   evento({ label, P: bom ? 0.5 : 0.1, A: 0.4, interesse: 0.8, expr: bom ? 'orgulhoso' : 'rindo', gesto: bom ? 'pulinhos' : 'rir', forcarGesto: true, social: 0.05, dur: 4000, emote: bom ? 'estrela' : null })
   setTimeout(() => mostrarBalao(bom ? ['🏆'] : ['👍'], `${pontos}/${total}`, 5000), 300)
 }
@@ -2273,7 +2276,7 @@ function brincCharada() {
     ouviu(t)
     if (SAIR_BRINC.test(t)) { fim(); return true }
     if (/desisto|n[ãa]o sei|passa|pula|pr[óo]xima/i.test(t)) { revelar(); return true }
-    if (temPalavra(t, b.atual[1])) {
+    if (temPalavra(t, b.atual[1]) || b.atual[1].split('|').some((a) => a.length >= 6 && palavrasN(t).trim().split(' ').some((w, i, ws) => distancia(w, a) <= 2 || distancia(ws.slice(i, i + 2).join(''), a.replace(/ /g, '')) <= 2))) {
       b.pontos++
       evento({ label: `acertou a charada: ${b.atual[2]}`, P: 0.4, A: 0.5, interesse: 0.9, expr: 'empolgado', gesto: 'pulinhos', forcarGesto: true, dur: 2000 })
       legendaSempre(`${cfg.nome}: Isso! É ${b.atual[2]}!`); setTimeout(b.proxima, 2800); return true
@@ -2744,7 +2747,7 @@ function talvezBomDia() {
   const h = new Date().getHours(), dia = hojeSv()
   if (P.bomDia === dia || h < 5 || h >= 13 || dormindo || sonoIA) return
   P.bomDia = dia; store.set('pers', P)
-  evento({ label: 'bom dia!', P: 0.4, A: 0.4, interesse: 0.8, expr: 'feliz', gesto: 'espreguicar', forcarGesto: true, icones: ['sol', 'calendario'], numero: new Date().toLocaleDateString('pt-BR', { day: 'numeric', month: 'numeric' }), dur: 3500 })
+  evento({ label: 'bom dia!', falar: sabeFalar(`bom dia ${cfg.dono}`) ? `bom dia, ${cfg.dono}!` : 'bom dia!', P: 0.4, A: 0.4, interesse: 0.8, expr: 'feliz', gesto: 'espreguicar', forcarGesto: true, icones: ['sol', 'calendario'], numero: new Date().toLocaleDateString('pt-BR', { day: 'numeric', month: 'numeric' }), dur: 3500 })
   if (P.local) setTimeout(() => falarDoTempo('hoje'), 4500)
   if (historiaParaContar()) setTimeout(() => contarHistoria(), P.local ? 11000 : 5000)
 }
@@ -2795,6 +2798,7 @@ const FIGURINHAS = [
   ['velha', '⭕', 'Ganhou no jogo da velha'], ['shazam', '🎧', 'Reconheceu uma música'], ['aprendeu_musica', '🎼', 'Aprendeu uma música'], ['karaoke', '🎤', 'Continuou a música'],
   ['truque', '🪄', 'Aprendeu um truque'], ['careta_nova', '🤪', 'Aprendeu uma careta'], ['palavra', '📖', 'Palavra do dia'], ['torcida', '⚽', 'Comemorou um gol'],
   ['agua', '💧', '8 copos de água'], ['coragem', '🌙', 'Perdeu o medo do escuro'], ['adivinha', '🔊', 'Adivinhou 3 sons'], ['genius', '🌈', '5 cores de memória'], ['historia2', '📜', 'História a dois'],
+  ['primeira_palavra', '🗣️', 'Falou a primeira palavra'], ['dez_palavras', '💬', 'Sabe falar 10 palavras'], ['atualizou', '🆙', 'Foi atualizado'],
 ]
 function figurinha(id) {
   P.album ||= {}
@@ -3446,6 +3450,7 @@ function guardarPalavra(palavra) {
   evento({ label: `palavra nova: ${palavra}`, P: 0.3, A: 0.3, interesse: 0.8, expr: 'empolgado', gesto: 'sim', forcarGesto: true, icones: ['livro', 'certo'], dur: 2000 })
   legendaSempre(`${cfg.nome}: “${palavra}”! Anotado. Vou usar hoje.`)
   figurinha('palavra')
+  setTimeout(() => aprenderPalavraFalada(palavra, 'você'), 2500)
   return true
 }
 
@@ -3587,7 +3592,7 @@ const RE_CARINHO_NOITE = /boa noite|t[ôo] aqui|estou aqui|calma|n[ãa]o precisa
 const medo = { esperandoAte: 0 }
 function comMedoDoEscuro() { // apagaram a luz à noite e ele ainda tem medo do escuro
   medo.esperandoAte = now() + 40000; abrirConversa()
-  evento({ label: 'tá escuro… tenho medo', P: -0.3, A: 0.5, interesse: 0.8, expr: 'medo', gesto: 'encolher', forcarGesto: true, icones: ['lua', 'pessoa', 'pergunta'], som: 'medo', dur: 3500 })
+  evento({ label: 'tá escuro… tenho medo', falar: 'medo…', P: -0.3, A: 0.5, interesse: 0.8, expr: 'medo', gesto: 'encolher', forcarGesto: true, icones: ['lua', 'pessoa', 'pergunta'], som: 'medo', dur: 3500 })
   legendaSempre(`${cfg.nome}: Tá escuro… você tá aí? 🥺`, 8000)
 }
 function consolarDoEscuro() {
@@ -3617,13 +3622,21 @@ function estadoV26() {
   if (P.truques?.length) out.push(`Truques que ${cfg.dono} te ensinou: ${P.truques.map((x) => `"${x.palavra}" → ${x.nome}`).join('; ')}.`)
   const ms = Object.keys(P.musicas || {}); if (ms.length) out.push(`Músicas que você aprendeu com ${cfg.dono}: ${ms.join(', ')}. Também sabe: ${CANCOES.map((c) => c.nome).join(', ')}.`)
   if (P.musicasOuvidas?.length) out.push(`Músicas que você ouviu e reconheceu: ${P.musicasOuvidas.slice(0, 4).map((m) => m.titulo).join(', ')}.`)
-  if (P.agua?.dia === hojeSv()) out.push(`${cfg.dono} bebeu ${P.agua.copos} copo(s) de água hoje.`)
+  out.push(`${cfg.dono} bebeu ${P.agua?.dia === hojeSv() ? P.agua.copos : 0} de 8 copos de água hoje (você mostra um copinho na tela).`)
+  if (P.fala?.vocab?.length) out.push(`Palavras que você sabe FALAR em voz alta (como botões de pet): ${P.fala.vocab.join(', ')}. Se quiser falar, preencha "falar" com até 3 delas (nada fora da lista), principalmente para chamar atenção, cumprimentar, pedir carinho ou comemorar.`)
   return out.join('\n')
 }
 
 // ---------------------------------------------------------------- a fala que cai nestes recursos (antes da IA)
 function interceptarV26(text) {
   const t = text.trim(), n = txtN(t)
+  if (pedidoAtualizar.ate > now()) {
+    if (RE_NAO.test(t) || /depois|agora n[ãa]o|mais tarde|espera/i.test(t)) { ouviu(t); pedidoAtualizar.ate = 0; evento({ label: 'ok, atualizo depois', P: -0.05, interesse: 0.4, expr: 'contente', gesto: 'sim', forcarGesto: true, dur: 1500 }); legendaSempre(`${cfg.nome}: Tá bom, depois eu peço de novo.`); return true }
+    if (RE_SIM.test(t) || /pode|atualiza|bora|vai|manda ver|claro/i.test(t)) { ouviu(t); iniciarAtualizacao(); return true }
+  }
+  if (/(^|\s)(se )?atualiz(a|e|ar)\b|tem vers[ãa]o nova|vers[ãa]o mais nova/i.test(t) && t.split(/\s+/).length <= 8) { ouviu(t); iniciarAtualizacao(); return true }
+  if (ensinarFala(t)) return true
+  if (/(como (est[áa]|t[áa]) o copo|quantos copos|quanta [áa]gua|o copo)/i.test(t) && !/bebi|tomei/i.test(t)) { ouviu(t); const c = P.agua?.dia === hojeSv() ? P.agua.copos : 0; enviarC3(`COPO ${c} 8 6000`); legendaSempre(`${cfg.nome}: ${c} de 8 copos hoje.${c < 8 ? ' Bora mais um?' : ' Meta batida!'}`); return true }
   if (medo.esperandoAte && RE_CARINHO_NOITE.test(t)) { ouviu(t); consolarDoEscuro(); return true }
   if (pedidoPalavra > now() && !brinc) {
     pedidoPalavra = 0
@@ -3641,7 +3654,7 @@ function interceptarV26(text) {
     evento({ label: `agora torço pro ${P.time}!`, P: 0.4, A: 0.5, interesse: 0.8, expr: 'empolgado', gesto: 'pulinhos', forcarGesto: true, icones: ['futebol', 'coracao'], dur: 2500 })
     legendaSempre(`${cfg.nome}: Agora eu também torço pro ${P.time}! Vou ficar de olho nos jogos.`); return true
   }
-  if (/(^|\s)(bebi|tomei)\s.*[áa]gua/i.test(t)) { ouviu(t); bebeuAgua(); return true }
+  if (/(^|\s)(bebi|tomei|acabei de (beber|tomar)|j[áa] (bebi|tomei))\s.*[áa]gua|^(eu )?[áa]gua[.!]*$/i.test(t)) { ouviu(t); bebeuAgua(); return true }
   if (/(regar|aguar) as plantas/i.test(t) && /(cada|todo|toda|lembr)/i.test(t)) {
     ouviu(t); const d = numeroFalado(t) || 3
     P.plantas = { cada: clamp(d, 1, 30), ultima: Date.now() }; store.set('pers', P)
@@ -3661,6 +3674,172 @@ function interceptarV26(text) {
 }
 
 iniciarVidaV26()
+
+// ================================================================ PALAVRINHAS FALADAS (v29)
+// Como os botões de fala de pet, ou o Bumblebee com o rádio: ele sabe poucas palavras de verdade e
+// vai aprendendo mais (uma por dia, ou quando você ensina). Cada palavra sai numa voz diferente do
+// sistema, com um chiado de rádio antes. Quanto mais palavras e dias de vida, mais vezes ele fala.
+// No robô de verdade: as palavras viram áudios curtos gerados no homelab e tocados pelo S3.
+const LICOES = ['carinho', 'olha', 'brincar', 'oi', 'obrigado', 'legal', 'música', 'sono', 'feliz', 'triste', 'água', 'sim', 'não', 'de novo', 'tchau', 'bom dia', 'boa noite', 'amigo', 'medo', 'frio', 'calor', 'atenção', 'você', 'eu', 'gosto', 'conversar', 'saudade', 'uau', 'eba', 'atualizar']
+const ICONE_PALAVRA = { carinho: 'coracao', olha: 'olhos', brincar: 'jogo', oi: '👋', obrigado: 'coracao', legal: 'ok', 'música': 'musica', sono: 'dormir', feliz: 'sorriso', triste: 'coracao_partido', 'água': 'agua', sim: 'ok', 'não': 'nao_ok', 'bom dia': 'sol', 'boa noite': 'lua', amigo: 'abraco', medo: 'fantasma', frio: 'neve', calor: 'calor', 'você': 'pessoa', eu: 'robo', saudade: 'coracao', atualizar: 'seta_cima' }
+function iniciarFala() {
+  if (!P.fala) { P.fala = { vocab: ['oi', 'eu'], ultimaLicao: '' }; store.set('pers', P) }
+}
+const normPal = (x) => txtN(x).replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim()
+const vocabSet = () => new Set((P.fala?.vocab || []).flatMap((w) => normPal(w).split(' ')))
+const sabeFalar = (texto) => { const v = vocabSet(), ws = normPal(texto).split(' ').filter(Boolean); return ws.length > 0 && ws.length <= 4 && ws.every((w) => v.has(w)) }
+const vontadeFalar = () => clamp(0.08 + (P.fala?.vocab.length || 0) * 0.03 + (P.dias || 0) * 0.02, 0, 0.75)
+let falaAte = 0
+function vozesPt() {
+  const vs = window.speechSynthesis?.getVoices() || []
+  const br = vs.filter((v) => /^pt[-_]BR/i.test(v.lang) || /brasil|brazil/i.test(v.name))
+  return br.length ? br : vs.filter((v) => /^pt/i.test(v.lang))
+}
+window.speechSynthesis?.addEventListener?.('voiceschanged', () => vozesPt())
+// Pedaços crescentes, como quem está aprendendo: "ca", "cari", "carinho".
+function silabasCrescentes(p) {
+  const sil = p.match(/[^aeiouáéíóúâêôãõà\s]*[aeiouáéíóúâêôãõà]+(?:[^aeiouáéíóúâêôãõà\s](?![aeiouáéíóúâêôãõà]))?/gi) || [p]
+  if (sil.length < 2) return [p.slice(0, 1) + '…', p]
+  return [sil[0], sil.slice(0, Math.ceil(sil.length / 2)).join(''), p]
+}
+function falar(texto, { gaguejar = false, forcar = false, quieto = false } = {}) {
+  if (!window.speechSynthesis || !actx || dormindo) return false
+  if (!forcar && (now() < falaAte || gravando || vad.ativo || vad.verificando || captura)) return false
+  const vozes = vozesPt(), pedacos = gaguejar ? silabasCrescentes(texto) : [texto]
+  if (!vozes.length) { pushLog('Fala: este aparelho não tem voz em português'); return false }
+  falaAte = now() + 12000
+  const out = actx.createGain(); out.gain.value = 0.18; out.connect(actx.destination)
+  ruido(out, actx.currentTime + 0.02, 0.14, 2600) // chiado de rádio
+  speechSynthesis.cancel()
+  pedacos.forEach((p, i) => {
+    const u = new SpeechSynthesisUtterance(p)
+    u.voice = sorteia(vozes); u.lang = u.voice.lang // cada pedaço numa voz diferente, como o Bumblebee
+    u.pitch = clamp(1.25 + Math.random() * 0.6, 0, 2); u.rate = gaguejar && i < pedacos.length - 1 ? 0.85 : 1.05; u.volume = 0.95
+    if (i === pedacos.length - 1) u.onend = () => { falandoAte = now() + 500 }
+    speechSynthesis.speak(u)
+  })
+  falandoAte = now() + 1800 * pedacos.length + texto.length * 90 // o ouvido não confunde a fala dele com a sua
+  const ic = ICONE_PALAVRA[normPal(texto)] || ICONE_PALAVRA[texto]
+  if (!quieto) setTimeout(() => mostrarBalao(ic && texto.length > 12 ? [ic] : [], texto.toUpperCase().slice(0, 12), 2600), 150)
+  pushLog(`Fala→ "${texto}"${gaguejar ? ' (aprendendo)' : ''}`)
+  return true
+}
+// Fala só se souber as palavras e der vontade (cada vez mais, com o tempo).
+function talvezFalar(texto, extra = 0) {
+  if (!texto || !sabeFalar(texto) || Math.random() > vontadeFalar() + extra) return false
+  return falar(texto)
+}
+function aprenderPalavraFalada(palavra, deQuem = 'sozinho') {
+  palavra = String(palavra).replace(/[.!?,;:"“”]+$/g, '').trim().slice(0, 24)
+  if (!palavra || palavra.split(/\s+/).length > 3) return false
+  const ja = (P.fala.vocab || []).some((w) => normPal(w) === normPal(palavra))
+  if (!ja) { P.fala.vocab = [...P.fala.vocab, palavra].slice(-60); store.set('pers', P) }
+  falar(palavra, { gaguejar: !ja, forcar: true })
+  if (!ja) {
+    lembrar(`Aprendi a falar "${palavra}"${deQuem === 'você' ? ` com ${cfg.dono}` : ''}`, 5)
+    setTimeout(() => {
+      evento({ label: `aprendi a falar: ${palavra}`, P: 0.4, A: 0.4, interesse: 0.8, expr: 'orgulhoso', gesto: 'pulinhos', forcarGesto: true, dur: 2500 })
+      legendaSempre(`${cfg.nome}: Aprendi a falar “${palavra}”! (${P.fala.vocab.length} palavras)`, 6000)
+    }, 3500)
+    figurinha(P.fala.vocab.length >= 10 ? 'dez_palavras' : 'primeira_palavra')
+  }
+  return true
+}
+function licaoDoDia() { // uma palavra nova por dia, sozinho
+  const prox = [cfg.dono, ...LICOES].find((w) => !(P.fala.vocab || []).some((x) => normPal(x) === normPal(w)))
+  P.fala.ultimaLicao = hojeSv(); store.set('pers', P)
+  if (!prox) return
+  pushLog(`Fala→ treinando a palavra "${prox}"`)
+  aprenderPalavraFalada(prox)
+}
+let pediuCarinho = 0
+function tickFala() {
+  if (!P.fala || dormindo || brinc || alarme) return
+  const h = horaDoDia()
+  if (P.fala.ultimaLicao !== hojeSv() && temGente() && papo.estado === 'parado' && !imag.ativo && !palco && h >= 9 && h < 21 && Math.random() < 0.004) return licaoDoDia()
+  // pedir carinho com a voz (quando está carente e gosta de você)
+  if (temGente() && N.social < 0.4 && P.afeto > 0.55 && now() - pediuCarinho > 20 * 60000 && papo.estado === 'parado' && sabeFalar('carinho') && Math.random() < 0.01) {
+    pediuCarinho = now()
+    evento({ label: 'pedindo carinho', P: 0.1, A: 0.3, interesse: 0.7, expr: 'timido', gesto: 'timido', forcarGesto: true, icones: ['coracao', 'pergunta'], som: false, dur: 3000 })
+    setTimeout(() => falar(sabeFalar(`carinho ${cfg.dono}`) && Math.random() < 0.5 ? `carinho, ${cfg.dono}?` : 'carinho?'), 600)
+  }
+}
+// "fala carinho", "diz eu te amo", "repete comigo: banana", "aprende a falar meu nome"
+function ensinarFala(text) {
+  if (/(fala|diz|diga|fale) (o )?meu nome/i.test(text)) { ouviu(text); aprenderPalavraFalada(cfg.dono, 'você'); return true }
+  const m = /^(?:\s*(?:bob-?e|rob[ôo])[,\s]*)?(?:fala|fale|diz|diga|repete(?: comigo)?|repita(?: comigo)?|aprende a falar|aprenda a falar|consegue falar|tenta falar)\s*[:,]?\s+["“']?([^"”']{2,24}?)["”']?[.!?]*$/i.exec(text.trim())
+  if (!m) return false
+  const p = m[1].trim()
+  if (/^(comigo|s[ée]rio|a[ií]|alguma coisa|algo|o que|isso|mais|mais alto|de novo|outra coisa|uma coisa|qualquer coisa|nada|por qu[eê]|como|pra mim)$/i.test(p) || p.split(/\s+/).length > 3) return false
+  ouviu(text); aprenderPalavraFalada(p, 'você'); return true
+}
+
+// ================================================================ VERSÃO NOVA (v29)
+// Ele percebe que tem versão nova, pede para o tutor deixar atualizar, mostra a tela "baixando e
+// instalando" (chuva de letras) e, ao voltar, conta o que aprendeu a fazer.
+const NOVIDADES = {
+  v28: [['mundo', 'lembrar de tudo em qualquer aparelho']],
+  v29: [['seta_cima', 'perceber quando tem versão nova e pedir pra atualizar'], ['musica', 'falar umas palavrinhas de verdade (e aprender mais)'], ['agua', 'entender “acabei de beber água” e mostrar o copo'], ['ouvido', 'ouvir mais frases por hora']],
+}
+const numV = (v) => +String(v).replace(/\D/g, '') || 0
+let pedidoAtualizar = { ate: 0, prox: 0 }, atualizando = false
+function avisarVersaoNova(v) {
+  if (atualizando || dormindo || brinc || alarme || jogo || papo.estado === 'conversando' || gravando || now() < pedidoAtualizar.prox) return
+  pedidoAtualizar = { ate: now() + 60000, prox: now() + 30 * 60000 }
+  abrirConversa()
+  evento({ label: `tem versão nova pra mim (${v})`, P: 0.3, A: 0.6, interesse: 0.9, expr: 'empolgado', gesto: 'pulinhos', forcarGesto: true, icones: ['robo', 'seta_cima', 'pergunta'], dur: 4000 })
+  legendaSempre(`${cfg.nome}: Tem uma versão nova pra mim (${v})! Posso atualizar? (sim ou depois)`, 15000)
+  setTimeout(() => talvezFalar('atualizar?', 0.5) || talvezFalar(`${cfg.dono}!`), 900)
+}
+function bipDados() { if (!actx) return; const out = actx.createGain(); out.gain.value = 0.12; out.connect(actx.destination); const t = actx.currentTime + 0.01; for (let i = 0; i < 3; i++) silaba(out, t + i * 0.05, 1200 + Math.random() * 1800, 900 + Math.random() * 2400, 0.04, 'square', 0, 0.5) }
+function iniciarAtualizacao() {
+  if (atualizando) return
+  if (!versaoNova) { evento({ label: 'já estou na versão mais nova', P: 0.1, interesse: 0.5, expr: 'orgulhoso', gesto: 'sim', forcarGesto: true, icones: ['robo', 'certo'], numero: NUM_VERSAO, dur: 2500 }); return legendaSempre(`${cfg.nome}: Já tô na versão mais nova (${NUM_VERSAO})!`) }
+  atualizando = true; pedidoAtualizar.ate = 0
+  acabarBrinc('atualização'); pararImaginacao(); balao = null
+  try { localStorage.setItem('robo.atualizacao', JSON.stringify({ de: NUM_VERSAO, para: versaoNova, t: Date.now() })) } catch {}
+  evento({ label: `atualizando para ${versaoNova}!`, P: 0.3, A: 0.7, interesse: 1, expr: 'empolgado', gesto: 'surpresa', forcarGesto: true, dur: 1500 })
+  legendaSempre(`${cfg.nome}: Baixando ${versaoNova}… não me desliga!`, 12000)
+  let pct = 0
+  const passo = setInterval(() => {
+    pct = Math.min(100, pct + rnd(3, 9)); bipDados()
+    enviarC3(`MATRIX baixar ${Math.round(pct)} ${versaoNova}`)
+    if (pct >= 100) { clearInterval(passo); enviarC3(`MATRIX instalar 5 ${versaoNova}`); legendaSempre(`${cfg.nome}: Instalando ${versaoNova}…`, 8000); setTimeout(atualizar, 1200) }
+  }, 260)
+}
+// Ao abrir depois de atualizar: termina a "instalação" na tela e conta o que aprendeu.
+function depoisDaAtualizacao() {
+  let a = null
+  try { a = JSON.parse(localStorage.getItem('robo.atualizacao') || 'null') } catch {}
+  if (!a) return
+  if (document.visibilityState === 'hidden') return document.addEventListener('visibilitychange', depoisDaAtualizacao, { once: true })
+  try { localStorage.removeItem('robo.atualizacao') } catch {}
+  if (numV(NUM_VERSAO) <= numV(a.de) || Date.now() - a.t > 6 * 3600000) return
+  let pct = 5
+  enviarC3(`MATRIX instalar ${pct} ${NUM_VERSAO}`)
+  const it = setInterval(() => {
+    pct = Math.min(100, pct + rnd(6, 14)); bipDados(); enviarC3(`MATRIX instalar ${Math.round(pct)} ${NUM_VERSAO}`)
+    if (pct >= 100) { clearInterval(it); setTimeout(() => { enviarC3('MATRIX -'); despertarAtualizado(a) }, 900) }
+  }, 280)
+}
+function despertarAtualizado(a) {
+  const novas = Object.entries(NOVIDADES).filter(([v]) => numV(v) > numV(a.de) && numV(v) <= numV(NUM_VERSAO)).flatMap(([, l]) => l)
+  P.versoes = [...(P.versoes || []), { v: NUM_VERSAO, t: Date.now() }].slice(-30); store.set('pers', P)
+  lembrar(`Fui atualizado de ${a.de} para ${NUM_VERSAO}${novas.length ? ': agora sei ' + novas.map((n) => n[1]).join('; ') : ''}`, 7)
+  evento({ label: `fui atualizado para ${NUM_VERSAO}!`, P: 0.6, A: 0.8, interesse: 1, expr: 'surpreso', gesto: 'surpresa', forcarGesto: true, dur: 2000, emote: 'estrela' })
+  setTimeout(() => talvezFalar('uau!', 0.4), 600)
+  const lista = novas.length ? novas.slice(0, 5) : [['ideia', 'fazer umas coisas um pouquinho melhor']]
+  lista.forEach(([ic, txt], i) => setTimeout(() => { mostrarBalao([ic], '', 3200); legendaSempre(`${cfg.nome}: Agora eu sei ${txt}!`, 3500); somDe('feliz', 0.3); foco = { expr: 'pensando', ate: now() + 1500 } }, 3200 + i * 3600))
+  setTimeout(() => {
+    N.energia = clamp(N.energia + 0.2, 0, 1); N.estimulo = clamp(N.estimulo + 0.3, 0, 1)
+    evento({ label: 'me sinto mais esperto!', P: 0.6, A: 0.6, interesse: 0.9, expr: 'orgulhoso', gesto: 'pulinhos', forcarGesto: true, icones: ['cerebro', 'musculo'], numero: NUM_VERSAO, dur: 3500 })
+    legendaSempre(`${cfg.nome}: Me sinto mais esperto e poderoso! 💪 (${a.de} → ${NUM_VERSAO})`, 7000)
+    setTimeout(() => talvezFalar('legal!', 0.3), 800)
+    figurinha('atualizou')
+  }, 3200 + lista.length * 3600)
+}
+
+iniciarFala()
 
 // ---------------------------------------------------------------- a fala passa por aqui antes da IA
 function interceptarFala(text) {
@@ -3682,7 +3861,7 @@ function interceptarFala(text) {
 }
 function tickDiversao() {
   tickLembretes(); tickFoco(); tickBicho(); tickFesta()
-  for (const f of [tickMusicaOuvida, tickTorcida, tickCuidados, tickHobby, tickMedo]) { try { f() } catch (e) { erroUmaVez('diversão ' + f.name, e) } }
+  for (const f of [tickMusicaOuvida, tickTorcida, tickCuidados, tickHobby, tickMedo, tickFala]) { try { f() } catch (e) { erroUmaVez('diversão ' + f.name, e) } }
   const h = horaDoDia()
   if (P.palavra?.pediu !== hojeSv() && temGente() && !dormindo && papo.estado === 'parado' && !brinc && !imag.ativo && !palco && h >= 9 && h < 21 && Math.random() < 0.004) pedirPalavra()
   if (brinc || alarme) papo.ate = Math.max(papo.ate, now() + 20000)
@@ -3773,7 +3952,7 @@ $('#tSonhar').onclick = () => { if (!dormindo) dormir('teste'); sono.remDur = 40
 $('#tPesadelo').onclick = () => { if (!dormindo) dormir('teste'); sono.remDur = 40000; comecarREM('pesadelo') }
 $('#tBoaNoite').onclick = () => ritualBoaNoite()
 $('#tTocaAqui').onclick = () => comecarTocaAqui()
-const BOTOES_DIVERSAO = { tCharada: brincCharada, tVinte: brincVinte, tQuiz: brincQuiz, tCareta: brincCareta, tImitaEu: brincImitaEu, tRitmo: brincRitmo, tEsconde: brincEsconde, tPPT: brincPPT, tDesenhar: () => fazerDesenho(), tDancar: dancar, tDiario: mostrarDiario, tNoticias: noticiasEmEmojis, tFoco: () => comecarFoco(1), tLembrete: () => criarLembrete({ quando: Date.now() + 60000, tipo: 'lembrete', texto: 'beber água' }), tTempo: () => falarDoTempo('hoje'), tBicho: chamarBicho, tPresente: darPresente, tAlbum: mostrarAlbum, tFesta: () => fazerFesta(), tVelha: brincVelha, tAdivinhaSom: brincAdivinhaSom, tGenius: brincGenius, tHistoria2: brincHistoria2, tKaraoke: brincKaraoke, tQualMusica: () => qualMusica('pedido'), tMania: fazerMania, tAgua: bebeuAgua, tJogoTime: () => conferirJogo('pedido'), tPararBrinc: () => { acabarBrinc('botão'); pararFoco() } }
+const BOTOES_DIVERSAO = { tCharada: brincCharada, tVinte: brincVinte, tQuiz: brincQuiz, tCareta: brincCareta, tImitaEu: brincImitaEu, tRitmo: brincRitmo, tEsconde: brincEsconde, tPPT: brincPPT, tDesenhar: () => fazerDesenho(), tDancar: dancar, tDiario: mostrarDiario, tNoticias: noticiasEmEmojis, tFoco: () => comecarFoco(1), tLembrete: () => criarLembrete({ quando: Date.now() + 60000, tipo: 'lembrete', texto: 'beber água' }), tTempo: () => falarDoTempo('hoje'), tBicho: chamarBicho, tPresente: darPresente, tAlbum: mostrarAlbum, tFesta: () => fazerFesta(), tVelha: brincVelha, tAdivinhaSom: brincAdivinhaSom, tGenius: brincGenius, tHistoria2: brincHistoria2, tKaraoke: brincKaraoke, tQualMusica: () => qualMusica('pedido'), tMania: fazerMania, tFalar: () => (P.fala.vocab.length ? falar(sorteia(P.fala.vocab), { forcar: true }) : null), tLicao: licaoDoDia, tTesteAtualizar: () => { const a = { de: 'v' + (numV(NUM_VERSAO) - 1), t: Date.now() }; let pct = 0; const it = setInterval(() => { pct += 9; enviarC3(`MATRIX ${pct < 55 ? 'baixar' : 'instalar'} ${Math.min(100, pct)} ${NUM_VERSAO}`); if (pct >= 100) { clearInterval(it); setTimeout(() => { enviarC3('MATRIX -'); despertarAtualizado(a) }, 700) } }, 280) }, tAgua: bebeuAgua, tJogoTime: () => conferirJogo('pedido'), tPararBrinc: () => { acabarBrinc('botão'); pararFoco() } }
 for (const [id, f] of Object.entries(BOTOES_DIVERSAO)) $('#' + id).onclick = () => { if (dormindo) acordar(); f() }
 $('#tTerTemp').value = terrario.temp; $('#tTerUmid').value = terrario.umid
 $('#tTerTemp').oninput = (e) => { terrario.temp = +e.target.value; $('#tvT').textContent = terrario.temp; store.set('terrario', terrario) }
@@ -3851,9 +4030,10 @@ Sons         : ${sons.map((o) => `${o.significado || 'desconhecido'} ×${o.vezes
 Imaginação   : ${imag.ativo ? imag.ativo.tipo : dormindo ? (sono.rem ? 'REM: ' + sono.rem.tipo : `dormindo (REM em ${Math.max(0, Math.round((sono.proxREM - now()) / 60000))} min)`) : '—'} · hoje ${imagHoje.n}/14 · histórias por contar ${memorias.filter((m) => m.historia && !m.contado).length}
 Data         : ${(() => { const d = dataAtiva(); return d ? `${d.nome} (${d.dias >= 0 ? 'faltam ' + d.dias + ' dia(s)' : 'hoje'})` : 'nenhuma perto' })()}${dataSim ? ' · simulando ' + dataSim : ''} · decoração ${decoracaoAtual()?.map((e) => e.el).join(', ') || '—'} · sugestões ${(P.sugestoes || []).length}
 Vestindo     : ${Object.keys(vestido).join(', ') || '—'} · frio ${nivelFrio(clima.temp)} · calor ${nivelCalor(clima.temp)}
-Mãos livres  : ${now() < vad.modoTVAte ? `modo TV (mais ${Math.ceil((vad.modoTVAte - now()) / 60000)} min) · ` : ''}${P.vozNome ? `voz do dono aprendida (${P.vozNome.n}) · ` : ''}${!cfg.maosLivres ? 'desligado' : !cfg.key ? 'precisa da chave' : vad.verificando ? 'conferindo se era com ele…' : vad.ativo ? 'ouvindo uma frase' : 'esperando o nome'} · ${vad.hora.length}/40 na hora${jogo ? `
+Mãos livres  : ${now() < vad.modoTVAte ? `modo TV (mais ${Math.ceil((vad.modoTVAte - now()) / 60000)} min) · ` : ''}${P.vozNome ? `voz do dono aprendida (${P.vozNome.n}) · ` : ''}${!cfg.maosLivres ? 'desligado' : !cfg.key ? 'precisa da chave' : vad.verificando ? 'conferindo se era com ele…' : vad.ativo ? 'ouvindo uma frase' : 'esperando o nome'} · ${vad.hora.length}/200 na hora${jogo ? `
 Jogo         : ${jogo.fase} · ${jogo.seq.length} notas` : ''}` + `
 Diversão     : ${brinc ? 'brincando de ' + brinc.tipo : '—'}${modoFoco ? ` · foco ${modoFoco.fase}${isFinite(modoFoco.fim) ? ' (' + Math.max(0, Math.ceil((modoFoco.fim - now()) / 60000)) + ' min)' : ''}` : ''}${alarme ? ' · ALARME tocando' : ''} · lembretes ${(P.lembretes || []).map((l) => hhmm(l.quando)).join(', ') || '—'} · álbum ${Object.keys(P.album || {}).length}/${FIGURINHAS.length} · desenhos ${(P.desenhos || []).length}
+Fala         : ${P.fala?.vocab?.length || 0} palavra(s): ${(P.fala?.vocab || []).join(', ') || '—'} · vontade de falar ${Math.round(vontadeFalar() * 100)}% · vozes pt ${vozesPt().length}
 Vida nova    : hobby ${P.hobby?.tema || '—'} · mania ${MANIAS[P.mania] || '—'} · medo do escuro ${Math.round((P.medoEscuro ?? 0) * 100)}% · palavra ${P.palavra?.dia === hojeSv() ? P.palavra.palavra : '—'} · time ${P.time || '—'} · água ${P.agua?.dia === hojeSv() ? P.agua.copos : 0}/8 · truques ${(P.truques || []).length} · caretas ${(P.caretas || []).length} · músicas ${Object.keys(P.musicas || {}).length} · Genius ${P.recordeGenius || 0}
 Terrário     : ${terrario.temp} °C · ${terrario.umid} %${bicho.ativo ? ' · bichinho passeando' : ''} · ${diasDeVida()} dia(s) de vida${P.local ? ' · previsão: ' + (textoPrevisao() || 'carregando') : ''}
 Desempenho   : C3 tela ${c3.perf.quadro.toFixed(1)} ms/quadro (${Math.round(c3.perf.fps)} fps) · S3 cérebro ${perf.cerebro.toFixed(2)} ms a cada 50 ms · ouvido ${perf.ouvido.toFixed(2)} ms a cada 23 ms · tom ${perf.tom.toFixed(2)} ms
@@ -3932,6 +4112,7 @@ async function acordarRobo(automatico = false) {
     if (!cfg.key) pushLog('Dica: ⚙️ → chave do Groq para conversar pelo 🎤')
     else if (cfg.maosLivres) pushLog(`Dica: é só chamar "${cfg.nome}" e falar`)
     if (automatico) pushLog('Acordou sozinho (microfone já liberado)')
+    setTimeout(depoisDaAtualizacao, 1500)
   } catch (e) {
     micStream = null
     if (!automatico) $('#start').querySelector('p').textContent = 'Não consegui usar o microfone: ' + e.message + '. Libere o microfone para este site e tente de novo.'
@@ -3950,6 +4131,7 @@ async function conferirVersao() {
     const v = (await (await fetch('versao.txt?t=' + Date.now(), { cache: 'no-store' })).text()).trim()
     if (!/^v\d+$/.test(v) || v === NUM_VERSAO) return
     if (versaoNova !== v) { versaoNova = v; pushLog(`Versão nova no site: ${v} (esta é ${NUM_VERSAO})`); $('#btnAtualizar').hidden = false }
+    if (document.visibilityState === 'visible') avisarVersaoNova(v)
     if (document.visibilityState === 'hidden') atualizar()
   } catch {}
 }
@@ -3969,10 +4151,11 @@ setInterval(sincronizarNuvem, 3 * 60000)
 document.addEventListener('visibilitychange', () => sincronizarNuvem())
 $('#tSincronizar').onclick = () => { pushLog('Memória na nuvem: sincronizando agora'); sincronizarNuvem() }
 function atualizar() {
-  enviarLog('atualizando').finally(() => location.replace(location.pathname + '?v=' + (versaoNova || Date.now()) + location.hash))
+  try { if (!localStorage.getItem('robo.atualizacao')) localStorage.setItem('robo.atualizacao', JSON.stringify({ de: NUM_VERSAO, para: versaoNova, t: Date.now() })) } catch {}
+  Promise.allSettled([enviarLog('atualizando'), memoriaNuvem.sincronizar()]).finally(() => location.replace(location.pathname + '?v=' + (versaoNova || Date.now()) + location.hash))
 }
 setInterval(conferirVersao, 3 * 60000); setTimeout(conferirVersao, 8000)
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden' && versaoNova) atualizar(); else if (document.visibilityState === 'visible') conferirVersao() })
-$('#btnAtualizar').onclick = () => atualizar()
+$('#btnAtualizar').onclick = () => iniciarAtualizacao()
 c3.ligar()
 setInterval(cicloCerebro, 50)

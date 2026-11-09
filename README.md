@@ -49,6 +49,21 @@ Abra https://userm4c.github.io/robo-de-mesa/ no Chrome do Android e toque em "Ac
 - **Companhia:** torcedor do seu time ("meu time é o …": agenda do dia, placar ao vivo, comemora gol), pausa depois de 2 h na frente dele, copinho de água ("bebi água", meta de 8), plantas ("me lembra de regar as plantas a cada 3 dias", "reguei"), fica com sono antes de você às 22 h.
 - **Personalidade:** hobby que muda a cada 1–2 semanas, uma mania própria, ciúme leve do celular (olhando para baixo por muito tempo), música do humor (feliz = rápida e maior; triste = devagar e menor) e medo do escuro que passa com carinho.
 
+## Palavrinhas e atualização (v29)
+
+- **Fala de verdade, aos pouquinhos** (como os botões de fala de pet, ou o Bumblebee com o rádio):
+  - Nasce sabendo "oi" e "eu" e aprende uma palavra por dia, gaguejando no começo ("ca… cari… carinho!"). O seu nome vem primeiro.
+  - Você também ensina: "fala carinho", "diz o meu nome", "repete comigo: banana". A palavra do dia também vira palavra falada.
+  - Usa as palavras para cumprimentar, chamar atenção, pedir carinho, comemorar e se assustar. A IA pode escolher palavras da lista dele.
+  - Fala cada vez mais vezes conforme o vocabulário e os dias de vida. Cada palavra sai numa voz pt-BR diferente do aparelho, com um chiado de rádio antes, e aparece escrita num balão.
+  - No robô de verdade, as palavras viram áudios curtos gerados no homelab.
+- **Versão nova:**
+  - Ele percebe a versão nova e pede: "Tem uma versão nova pra mim! Posso atualizar?" (sim / depois).
+  - Também dá para pedir com "se atualiza".
+  - Atualizando, a tela mostra uma chuva de letras verdes com a barra "BAIXANDO" e depois "INSTALANDO".
+  - Ao voltar, conta uma a uma as novidades da versão ("Agora eu sei…") e diz que se sente mais esperto e poderoso.
+  - Se a tela estiver fora de vista, atualiza sozinho e conta as novidades quando você voltar.
+
 ## Memória na nuvem (v28)
 
 A mesma memória do robô em todos os aparelhos. Ela fica em `memoria/robo.json` no repositório privado dos logs e usa o mesmo token do log (⚙️ ou o link pessoal).
@@ -72,7 +87,7 @@ O protótipo já está separado do jeito que o robô de verdade vai ser:
 | `comum.js` | tabelas nos dois chips | ícones, cores, emotes, acessórios, expressões, duração dos gestos. |
 | `icones.js` | flash do C3 | 159 ícones 16×16 em 4 bits por pixel (≈21 KB), gerados por `ferramentas/gerar_icones.py`. |
 
-**Mensagens S3→C3** (uma linha de texto cada, só quando algo muda): `EXPR`, `OLHAR`, `ATENTO`, `SONO`, `TREME`, `GESTO`, `PISCAR`, `BATIDA`, `ICONE`, `BALAO`, `EMOTE`, `DESENHO`, `ACESS`, `MOLDURA`, `NEVOA`, `LIMPAR`, `HUMOR`, `NUVEM`, `PAINEL`, `SONHO`, `CARNEIROS`, `BICHO`, `ANEL`, `STATUS`, `VELHA`, `COPO`, `COR`. **C3→S3:** `TOQUE x y`. Com o rosto parado passa quase nada; conversando, umas 10–15 mensagens e ~130 bytes por segundo (0,1 % de uma UART a 921600 baud). A lista completa está no começo de `receber()` em `c3.js`.
+**Mensagens S3→C3** (uma linha de texto cada, só quando algo muda): `EXPR`, `OLHAR`, `ATENTO`, `SONO`, `TREME`, `GESTO`, `PISCAR`, `BATIDA`, `ICONE`, `BALAO`, `EMOTE`, `DESENHO`, `ACESS`, `MOLDURA`, `NEVOA`, `LIMPAR`, `HUMOR`, `NUVEM`, `PAINEL`, `SONHO`, `CARNEIROS`, `BICHO`, `ANEL`, `STATUS`, `VELHA`, `COPO`, `COR`, `MATRIX`. **C3→S3:** `TOQUE x y`. Com o rosto parado passa quase nada; conversando, umas 10–15 mensagens e ~130 bytes por segundo (0,1 % de uma UART a 921600 baud). A lista completa está no começo de `receber()` em `c3.js`.
 
 **Regras de desenho para caber no C3:** pixel art e retângulos não giram (inclinar a cabeça gira só os pontos de encaixe dos olhos e da boca); fundo liso tingido pelo humor em vez de degradê; máscaras dos olhos pintadas com a cor do fundo em vez de recortadas; névoa em pontilhado; transições sem girar nem misturar cores; texto numa fonte de pixel 5×7 própria.
 
