@@ -5,7 +5,7 @@
 //   Cérebro = emoções em 3 camadas (personalidade, humor do dia, emoção) + Groq
 // As mensagens entre S3 e C3 passam pelo "bus", que no robô vira a UART.
 
-import { criarServidor } from './servidor.js?v=24'
+import { criarServidor } from './servidor.js?v=25'
 import { criarC3 } from './c3.js?v=24'
 import { ICONES, PALETA, NOME_COR, EMOTES, ELEMENTOS, EXPR, GESTO_DUR as GESTOS, SAIDAS } from './comum.js?v=24'
 const $ = (s) => document.querySelector(s)
@@ -21,7 +21,7 @@ const store = {
 }
 
 // ---------------------------------------------------------------- barramento
-const VERSAO = 'v24 · 08/11'
+const VERSAO = 'v25 · 09/11'
 const logLines = []
 const filaLog = [] // tudo o que aconteceu desde o último envio para o log remoto
 function pushLog(s) {
@@ -81,8 +81,9 @@ const servidor = criarServidor(cfg, {
   },
   listas: () => ({ gestos: Object.keys(GESTOS), emocoes: EMOCOES, icones: Object.keys(ICONES), emotes: Object.keys(EMOTES), cores: NOME_COR, elementos: ELEMENTOS }),
 })
-const chaveGeminiValida = (k) => /^AIza[\w-]{30,}$/.test((k || '').trim())
-{ const m = location.hash.match(/gem=(AIza[\w-]+)/); if (m && m[1] !== cfg.geminiKey) { cfg.geminiKey = m[1]; store.set('cfg', cfg); store.set('geminiKey', m[1]) } }
+// Chave antiga começa com AIza; as novas do AI Studio (2026) começam com AQ.
+const chaveGeminiValida = (k) => /^(AIza[\w-]{30,}|AQ\.[\w.-]{20,})$/.test((k || '').trim())
+{ const m = location.hash.match(/gem=(AIza[\w-]+|AQ\.[\w.-]+)/); if (m && m[1] !== cfg.geminiKey) { cfg.geminiKey = m[1]; store.set('cfg', cfg); store.set('geminiKey', m[1]) } }
 if (!cfg.geminiKey && store.get('geminiKey', '')) cfg.geminiKey = store.get('geminiKey', '')
 let dadosProtegidos = null
 navigator.storage?.persisted?.().then((v) => (dadosProtegidos = v)).catch(() => {})
@@ -2825,8 +2826,8 @@ $('#cMaos').onchange = () => { cfg.maosLivres = $('#cMaos').checked; store.set('
 $('#cCidade').onchange = () => { cfg.cidade = $('#cCidade').value.trim(); store.set('cfg', cfg); tempo.ate = 0; if (cfg.cidade) pegarLocal().then((l) => ($('#cMsg').textContent = l ? 'Cidade salva para a previsão.' : 'Não achei essa cidade.')) }
 $('#cGemini').oninput = () => {
   const v = $('#cGemini').value.trim()
-  if (chaveGeminiValida(v)) { cfg.geminiKey = v; store.set('cfg', cfg); store.set('geminiKey', v); $('#cMsg').textContent = 'Chave do Gemini salva. Conferindo os modelos…'; servidor.conferirGemini().then(() => ($('#cMsg').textContent = servidor.modelos().gemini.length ? `Gemini pronto: ${servidor.modelos().gemini.map(servidor.curto).slice(0, 3).join(', ')}` : 'Não encontrei modelos do Gemini com essa chave.')) }
-  else if (v) $('#cMsg').textContent = 'Essa não parece uma chave do Gemini (começa com AIza).'
+  if (chaveGeminiValida(v)) { cfg.geminiKey = v; store.set('cfg', cfg); store.set('geminiKey', v); $('#cMsg').textContent = 'Chave do Gemini salva. Conferindo os modelos…'; servidor.conferirGemini().then(() => ($('#cMsg').textContent = servidor.modelos().gemini.length ? `Gemini pronto: ${servidor.modelos().gemini.map(servidor.curto).slice(0, 3).join(', ')}` : (servidor.erroGemini() ? 'A chave foi salva, mas o Google recusou: ' + servidor.erroGemini() : 'Não encontrei modelos do Gemini com essa chave.'))) }
+  else if (v) $('#cMsg').textContent = 'Essa não parece uma chave do Gemini (começa com AQ. ou AIza).'
 }
 $('#cLogToken').oninput = () => {
   const v = $('#cLogToken').value.trim()

@@ -78,7 +78,7 @@ export function criarServidor(cfg, op) {
     }
     if (!contents.length || contents[0].role !== 'user') contents.unshift({ role: 'user', parts: [{ text: '(começo da conversa)' }] })
     const corpo = { contents, ...(sys ? { systemInstruction: { parts: [{ text: sys }] } } : {}), ...(ferramentas ? { tools: ferramentas } : { generationConfig: { responseMimeType: 'application/json', temperature: extra.temperature ?? 0.6, maxOutputTokens: 2048 } }) }
-    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent?key=${encodeURIComponent(cfg.geminiKey)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(corpo) })
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': cfg.geminiKey }, body: JSON.stringify(corpo) })
     if (!r.ok) throw new Error(`Gemini ${r.status}: ${(await r.text()).replace(/\s+/g, ' ').slice(0, 420)}`)
     const j = await r.json()
     const txt = (j.candidates?.[0]?.content?.parts || []).map((x) => x.text || '').join('')
@@ -115,16 +115,18 @@ export function criarServidor(cfg, op) {
   }
 
   // ---------------------------------------------------------------- modelos e cota
+  let erroGemini = ''
   async function conferirGemini() {
     try {
-      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=${encodeURIComponent(cfg.geminiKey)}`)
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?pageSize=200`, { headers: { 'x-goog-api-key': cfg.geminiKey } })
       if (!r.ok) throw new Error(`Gemini ${r.status}: ${(await r.text()).slice(0, 160)}`)
       const { models = [] } = await r.json()
       const versao = (n) => +((/(\d+(?:\.\d+)?)/.exec(n) || [0, 0])[1])
       modelosGemini = models.filter((m) => (m.supportedGenerationMethods || []).includes('generateContent') && /flash/i.test(m.name) && !/image|tts|audio|live|embed|thinking|exp|preview/i.test(m.name))
         .map((m) => 'gemini:' + m.name.replace(/^models\//, '')).sort((a, b) => versao(b) - versao(a))
+      erroGemini = ''
       log(`Gemini disponível: ${modelosGemini.map(curto).slice(0, 4).join(', ') || 'nenhum modelo flash'}`)
-    } catch (e) { log('Gemini: ' + e.message) }
+    } catch (e) { erroGemini = e.message; log('Gemini: ' + e.message) }
   }
   async function conferirModelos() {
     if (!cfg.key) return
@@ -303,7 +305,7 @@ Responda SÓ JSON: {"noticias": [{"icones": [...], "frase": "..."}]}`
   }
 
   return {
-    curto, conferirModelos, conferirGemini, listarModelos, modelos: () => ({ groq: modelosGroq, gemini: modelosGemini }),
+    curto, conferirModelos, conferirGemini, listarModelos, modelos: () => ({ groq: modelosGroq, gemini: modelosGemini }), erroGemini: () => erroGemini,
     transcrever, conversar, registrarTroca, anotarUso,
     imaginar, refletir, desenhar, vinte, pesquisarIdeia, noticias, podePesquisar,
     folego, voltaDaIA, cotaTexto, esgotarParaTeste, liberarTeste,
